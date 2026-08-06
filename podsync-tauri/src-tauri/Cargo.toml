@@ -1,0 +1,39 @@
+[package]
+name = "podsync-tauri"
+version = "0.1.0"
+description = "iPod library manager (libgpod) — Tauri port of PodSync"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "podsync_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+cc = "1"
+pkg-config = "0.3"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+lofty = "0.22"
+base64 = "0.22"
+libc = "0.2"
+# Cue sheets from RuTracker-style rips are often cp1251; std can't decode it.
+encoding_rs = "0.8"
+
+# The app is IPC + FFI bound; fat LTO with one codegen unit buys both size and
+# cross-crate inlining on the serde snapshot path. Nothing here relies on
+# unwinding (no catch_unwind; the C bridge never unwinds), so abort is safe.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+opt-level = 3

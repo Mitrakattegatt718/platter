@@ -1,0 +1,4 @@
+.DS_Store
+
+# Symlink to podsync-tauri/src-tauri/target/release/bundle
+build
