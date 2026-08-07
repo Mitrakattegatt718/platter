@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ImagePlus } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,9 +14,17 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ArtworkThumb } from "@/components/ArtworkThumb";
 import { GenreField } from "@/components/GenreField";
 import type { BulkField } from "@/lib/api";
 import type { Track } from "@/lib/types";
+
+/** Albums repeat across artists ("Greatest Hits"), so an album is only the
+ * same album when its artist matches too — album artist where set, since
+ * that is what the iPod itself groups by. */
+function albumKey(track: Track): string {
+  return `${track.albumArtist || track.artist}\u0001${track.album}`;
+}
 
 /** The one value they all carry, or null when they disagree or are blank. */
 function shared(values: string[]): string | null {
@@ -91,6 +98,13 @@ export function BulkEditPanel({
 
   const artworkCount = tracks.filter((t) => t.hasArtwork).length;
 
+  // A cover is only shown when the whole selection is one album. Painting the
+  // first track's art across a mixed selection would imply it belongs to all
+  // of them — and the button beside it replaces art on every selected track,
+  // so that would be an actively misleading preview.
+  const sameAlbum = tracks.every((t) => albumKey(t) === albumKey(tracks[0]));
+  const artTrackId = sameAlbum ? tracks.find((t) => t.hasArtwork)?.id ?? null : null;
+
   async function pickArtwork() {
     const file = await openDialog({
       multiple: false,
@@ -157,9 +171,12 @@ export function BulkEditPanel({
         </Field>
 
         <div className="flex items-center gap-4">
-          <div className="flex size-20 items-center justify-center rounded-md bg-muted text-muted-foreground">
-            <ImagePlus className="size-6" />
-          </div>
+          <ArtworkThumb
+            trackId={artTrackId}
+            size={80}
+            missingCount={tracks.length - artworkCount}
+            className="rounded-md"
+          />
           <div className="flex flex-col items-start gap-1">
             <Button
               variant="outline"
