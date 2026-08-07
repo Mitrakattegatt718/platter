@@ -1,10 +1,10 @@
-import { memo, useRef } from "react";
+import { memo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { CircleDashed, Circle, Search, X, CheckCircle2 } from "lucide-react";
 import { Highlight } from "@/components/Highlight";
 import { ArtworkThumb } from "@/components/ArtworkThumb";
 import { formatDuration } from "@/lib/format";
-import type { AlbumSubgroup, ListRow, TrackGroup } from "@/lib/grouping";
+import { rowGroupId, type AlbumSubgroup, type ListRow, type TrackGroup } from "@/lib/grouping";
 import type { Track } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -12,9 +12,9 @@ import { cn } from "@/lib/utils";
  * can't drift apart. (The SwiftUI app needed runtime geometry measurement for
  * this; here it's a single class string.) */
 const COLUMNS =
-  "grid grid-cols-[minmax(0,1fr)_120px_120px_80px_30px_40px_40px_36px] items-center gap-2 px-4";
+  "grid grid-cols-[minmax(0,1fr)_120px_120px_80px_30px_40px_40px_36px_36px] items-center gap-2 px-4";
 
-type AlbumSelState = "all" | "some" | "none";
+type SelState = "all" | "some" | "none";
 
 export function TrackList({
   rows,
@@ -28,6 +28,7 @@ export function TrackList({
   onToggleGroup,
   onToggleAlbum,
   onToggleAlbumSelection,
+  onToggleGroupSelection,
   isDropTarget,
 }: {
   rows: ListRow[];
@@ -44,9 +45,14 @@ export function TrackList({
   onToggleGroup: (id: string) => void;
   onToggleAlbum: (id: string) => void;
   onToggleAlbumSelection: (album: AlbumSubgroup) => void;
+  onToggleGroupSelection: (group: TrackGroup) => void;
   isDropTarget: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** Section under the pointer. Rows are absolutely positioned siblings, so
+   * hovering "the artist section and everything inside it" can't be a CSS
+   * :hover on an ancestor — each row reports its section id instead. */
+  const [hoveredGroup, setHoveredGroup] = useState<string | null>(null);
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -66,10 +72,10 @@ export function TrackList({
     overscan: 12,
   });
 
-  const albumSelState = (album: AlbumSubgroup): AlbumSelState => {
+  const selStateOf = (tracks: Track[]): SelState => {
     let selected = 0;
-    for (const t of album.tracks) if (selection.has(t.id)) selected++;
-    if (selected === album.tracks.length) return "all";
+    for (const t of tracks) if (selection.has(t.id)) selected++;
+    if (selected === tracks.length) return "all";
     return selected > 0 ? "some" : "none";
   };
 
@@ -107,15 +113,23 @@ export function TrackList({
         <span className="text-center">Year</span>
         <span className="text-right">Time</span>
         <span className="text-right">kbps</span>
+        <span className="text-right" title="Plays recorded by the iPod">
+          Plays
+        </span>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto select-none">
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto select-none"
+        onMouseLeave={() => setHoveredGroup(null)}
+      >
         <div
           className="relative w-full"
           style={{ height: virtualizer.getTotalSize() + 24 }}
         >
           {virtualizer.getVirtualItems().map((item) => {
             const row = rows[item.index];
+            const groupId = rowGroupId(row);
             return (
               <div
                 key={item.key}
@@ -123,20 +137,25 @@ export function TrackList({
                 ref={virtualizer.measureElement}
                 className="absolute top-0 left-0 w-full"
                 style={{ transform: `translateY(${item.start}px)` }}
+                onMouseEnter={() => setHoveredGroup(groupId)}
               >
                 {row.kind === "artist" ? (
                   <ArtistHeader
                     group={row.group}
                     collapsed={collapsedGroups.has(row.group.id)}
+                    selState={selStateOf(row.group.tracks)}
+                    hovered={hoveredGroup === groupId}
                     query={searchQuery}
                     onToggle={onToggleGroup}
+                    onToggleSelection={onToggleGroupSelection}
                   />
                 ) : row.kind === "album" ? (
                   <AlbumHeader
                     album={row.album}
                     first={row.first}
                     collapsed={collapsedAlbums.has(row.album.id)}
-                    selState={albumSelState(row.album)}
+                    selState={selStateOf(row.album.tracks)}
+                    hovered={hoveredGroup === groupId}
                     query={searchQuery}
                     onToggle={onToggleAlbum}
                     onToggleSelection={onToggleAlbumSelection}
@@ -168,16 +187,65 @@ export function TrackList({
  * 0 — the artist header's bottom already spaces it) pb-3 (12px); track rows
  * py-1 (4px). */
 
+const SELECTION_ICONS = { all: CheckCircle2, some: CircleDashed, none: Circle } as const;
+
+/** Revealed only while the pointer is inside the owning artist section. The
+ * pointer-events guard matters: an invisible but clickable target sitting at
+ * the right edge of a header would swallow clicks meant for its collapse
+ * toggle. Keyboard focus still reaches it, and brings the visuals back. */
+function SelectAllButton({
+  selState,
+  hovered,
+  title,
+  onSelect,
+}: {
+  selState: SelState;
+  hovered: boolean;
+  title: string;
+  onSelect: () => void;
+}) {
+  const Icon = SELECTION_ICONS[selState];
+  return (
+    <button
+      className={cn(
+        // Opacity only — no transform. A control that slides in draws more
+        // attention than a select-all affordance deserves, and the header's
+        // baseline would visibly shift under it.
+        "shrink-0 transition-opacity motion-reduce:transition-none",
+        selState === "all" ? "text-primary" : "text-muted-foreground",
+        // Asymmetric: quick to arrive so it feels responsive to the pointer,
+        // slower to leave so crossing a gap between rows doesn't flicker.
+        hovered
+          ? "opacity-100 duration-150 ease-out"
+          : "pointer-events-none opacity-0 duration-300 ease-in focus-visible:pointer-events-auto focus-visible:opacity-100",
+      )}
+      title={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelect();
+      }}
+    >
+      <Icon className="size-4" />
+    </button>
+  );
+}
+
 const ArtistHeader = memo(function ArtistHeader({
   group,
   collapsed,
+  selState,
+  hovered,
   query,
   onToggle,
+  onToggleSelection,
 }: {
   group: TrackGroup;
   collapsed: boolean;
+  selState: SelState;
+  hovered: boolean;
   query: string;
   onToggle: (id: string) => void;
+  onToggleSelection: (group: TrackGroup) => void;
 }) {
   const count = group.tracks.length;
   return (
@@ -194,6 +262,13 @@ const ArtistHeader = memo(function ArtistHeader({
         <Highlight text={group.title} query={query} />
       </span>
       <span className="text-xs tabular-nums text-muted-foreground/70">{count}</span>
+      <div className="flex-1" />
+      <SelectAllButton
+        selState={selState}
+        hovered={hovered}
+        title="Select all tracks by this artist"
+        onSelect={() => onToggleSelection(group)}
+      />
     </div>
   );
 });
@@ -213,6 +288,7 @@ const AlbumHeader = memo(function AlbumHeader({
   first,
   collapsed,
   selState,
+  hovered,
   query,
   onToggle,
   onToggleSelection,
@@ -220,13 +296,12 @@ const AlbumHeader = memo(function AlbumHeader({
   album: AlbumSubgroup;
   first: boolean;
   collapsed: boolean;
-  selState: AlbumSelState;
+  selState: SelState;
+  hovered: boolean;
   query: string;
   onToggle: (id: string) => void;
   onToggleSelection: (album: AlbumSubgroup) => void;
 }) {
-  const SelectionIcon =
-    selState === "all" ? CheckCircle2 : selState === "some" ? CircleDashed : Circle;
   return (
     <div
       className={cn(
@@ -250,19 +325,12 @@ const AlbumHeader = memo(function AlbumHeader({
         </span>
       </div>
       <div className="flex-1" />
-      <button
-        className={cn(
-          "shrink-0",
-          selState === "all" ? "text-primary" : "text-muted-foreground",
-        )}
+      <SelectAllButton
+        selState={selState}
+        hovered={hovered}
         title="Select all tracks in this album"
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggleSelection(album);
-        }}
-      >
-        <SelectionIcon className="size-4" />
-      </button>
+        onSelect={() => onToggleSelection(album)}
+      />
     </div>
   );
 });
@@ -316,6 +384,9 @@ const TrackRow = memo(function TrackRow({
       </span>
       <span className="text-right text-xs tabular-nums text-muted-foreground/70">
         {track.bitrate > 0 ? track.bitrate : "—"}
+      </span>
+      <span className="text-right text-xs tabular-nums text-muted-foreground/70">
+        {track.playCount > 0 ? track.playCount : "—"}
       </span>
     </div>
   );

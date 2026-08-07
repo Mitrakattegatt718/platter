@@ -3,8 +3,13 @@ import type {
   ImportResult,
   LibrarySnapshot,
   PendingImport,
+  TrackFields,
   VolumeInfo,
 } from "./types";
+
+/** Fields set_field can stamp across a selection — string-valued ones only;
+ * the numeric fields are per-track by nature. */
+export type BulkField = "artist" | "albumArtist" | "album" | "composer" | "genre";
 
 export const api = {
   listVolumes: () => invoke<VolumeInfo[]>("list_volumes"),
@@ -21,16 +26,9 @@ export const api = {
     }),
   importFiles: (paths: string[]) =>
     invoke<ImportResult>("import_files", { paths }),
-  updateTrack: (args: {
-    id: string;
-    title: string;
-    artist: string;
-    album: string;
-    genre: string;
-    trackNumber: number;
-    year: number;
-  }) => invoke<LibrarySnapshot>("update_track", args),
-  setField: (ids: string[], field: "artist" | "album" | "genre", value: string) =>
+  updateTrack: (id: string, fields: TrackFields) =>
+    invoke<LibrarySnapshot>("update_track", { id, fields }),
+  setField: (ids: string[], field: BulkField, value: string) =>
     invoke<LibrarySnapshot>("set_field", { ids, field, value }),
   setArtwork: (ids: string[], imagePath: string) =>
     invoke<LibrarySnapshot>("set_artwork", { ids, imagePath }),

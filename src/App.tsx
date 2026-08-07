@@ -43,6 +43,7 @@ import {
   groupTracks,
   visibleTrackIds,
   type AlbumSubgroup,
+  type TrackGroup,
 } from "@/lib/grouping";
 import type {
   ImportOutcome,
@@ -50,6 +51,7 @@ import type {
   LibrarySnapshot,
   PendingImport,
   Progress,
+  Track,
   TrackGrouping,
   TrackSort,
 } from "@/lib/types";
@@ -294,17 +296,30 @@ export default function App() {
     [visibleIds],
   );
 
-  const toggleAlbumSelection = useCallback((album: AlbumSubgroup) => {
+  /** Select-all toggle shared by the artist and album headers: adds the whole
+   * set, or clears it when everything in it is already selected. */
+  const toggleTracksSelection = useCallback((tracks: Track[]) => {
     setSelection((prev) => {
       const next = new Set(prev);
-      const allSelected = album.tracks.every((t) => next.has(t.id));
-      for (const t of album.tracks) {
+      const allSelected = tracks.every((t) => next.has(t.id));
+      for (const t of tracks) {
         if (allSelected) next.delete(t.id);
         else next.add(t.id);
       }
       return next;
     });
   }, []);
+
+  const toggleAlbumSelection = useCallback(
+    (album: AlbumSubgroup) => toggleTracksSelection(album.tracks),
+    [toggleTracksSelection],
+  );
+
+  /** group.tracks is the artist's full set — albums only partition it. */
+  const toggleGroupSelection = useCallback(
+    (group: TrackGroup) => toggleTracksSelection(group.tracks),
+    [toggleTracksSelection],
+  );
 
   const toggleGroup = useCallback((id: string) => {
     setCollapsedGroups((prev) => {
@@ -457,6 +472,7 @@ export default function App() {
                 onToggleGroup={toggleGroup}
                 onToggleAlbum={toggleAlbum}
                 onToggleAlbumSelection={toggleAlbumSelection}
+                onToggleGroupSelection={toggleGroupSelection}
                 isDropTarget={isDropTarget}
               />
             </div>
@@ -477,7 +493,7 @@ export default function App() {
                   track={selectedTracks[0]}
                   busy={busy}
                   onSave={(fields) =>
-                    run(api.updateTrack({ id: selectedTracks[0].id, ...fields })).then(
+                    run(api.updateTrack(selectedTracks[0].id, fields)).then(
                       (s) => s && applySnapshot(s),
                     )
                   }

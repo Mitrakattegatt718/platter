@@ -5,6 +5,7 @@
 use base64::Engine;
 use lofty::file::TaggedFileExt;
 use lofty::prelude::*;
+use lofty::tag::ItemKey;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,11 +16,29 @@ pub struct PendingImport {
     pub file_path: String,
     pub title: String,
     pub artist: String,
+    /// Blank when the file has no album-artist tag — the iPod then falls back
+    /// to the track artist, which is the behaviour compilations depend on.
+    #[serde(default)]
+    pub album_artist: String,
     pub album: String,
+    #[serde(default)]
+    pub composer: String,
     pub genre: String,
     pub track_number: i32,
+    #[serde(default)]
+    pub track_count: i32,
+    #[serde(default)]
+    pub disc_number: i32,
+    #[serde(default)]
+    pub disc_count: i32,
     pub year: i32,
     pub duration_ms: i32,
+    /// kbps and Hz off the decoded stream, not the tags. 0 = lofty couldn't
+    /// work it out; the iPod is fine with 0, it just displays nothing.
+    #[serde(default)]
+    pub bitrate: i32,
+    #[serde(default)]
+    pub sample_rate: i32,
     /// Embedded art staged to a temp file — libgpod wants a path, not bytes.
     pub artwork_path: Option<String>,
     /// Same image as a data URL so the import dialog can preview it without
@@ -37,11 +56,18 @@ pub fn read(path: &str) -> PendingImport {
         file_path: path.to_string(),
         title: fallback_title,
         artist: "Unknown Artist".into(),
+        album_artist: String::new(),
         album: "Unknown Album".into(),
+        composer: String::new(),
         genre: String::new(),
         track_number: 0,
+        track_count: 0,
+        disc_number: 0,
+        disc_count: 0,
         year: 0,
         duration_ms: 0,
+        bitrate: 0,
+        sample_rate: 0,
         artwork_path: None,
         artwork_data_url: None,
     };
@@ -53,7 +79,12 @@ pub fn read(path: &str) -> PendingImport {
         return item;
     };
 
-    item.duration_ms = tagged.properties().duration().as_millis() as i32;
+    let properties = tagged.properties();
+    item.duration_ms = properties.duration().as_millis() as i32;
+    // audio_bitrate is the stream's own figure; overall_bitrate includes tag
+    // and container overhead, which is not what "192 kbps" means to anyone.
+    item.bitrate = properties.audio_bitrate().unwrap_or(0) as i32;
+    item.sample_rate = properties.sample_rate().unwrap_or(0) as i32;
 
     let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
         return item;
@@ -76,6 +107,23 @@ pub fn read(path: &str) -> PendingImport {
     }
     if let Some(v) = tag.track() {
         item.track_number = v as i32;
+    }
+    if let Some(v) = tag.track_total() {
+        item.track_count = v as i32;
+    }
+    if let Some(v) = tag.disk() {
+        item.disc_number = v as i32;
+    }
+    if let Some(v) = tag.disk_total() {
+        item.disc_count = v as i32;
+    }
+    // No Accessor methods for these two — they come out of the generic item
+    // map, which each format's tag maps onto its own key (TPE2, aART, …).
+    if let Some(v) = tag.get_string(&ItemKey::AlbumArtist) {
+        item.album_artist = v.to_string();
+    }
+    if let Some(v) = tag.get_string(&ItemKey::Composer) {
+        item.composer = v.to_string();
     }
 
     if let Some(picture) = tag.pictures().first() {

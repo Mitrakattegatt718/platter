@@ -330,34 +330,46 @@ fn import_tracks_blocking(
 
         // A converted source is a different file than the one whose tags were
         // read; lossless formats lofty can't parse stage with duration 0, so
-        // recover it from the converted ALAC.
-        let duration_ms = if item.duration_ms == 0 && *source != item.file_path {
-            tags::read(source).duration_ms
-        } else {
-            item.duration_ms
+        // recover it from the converted ALAC. Bitrate and sample rate belong
+        // to the converted stream either way, so they always come from there.
+        let converted = *source != item.file_path;
+        let probed = (converted || item.duration_ms == 0).then(|| tags::read(source));
+        let duration_ms = match &probed {
+            Some(p) if item.duration_ms == 0 => p.duration_ms,
+            _ => item.duration_ms,
+        };
+        let (bitrate, sample_rate) = match &probed {
+            Some(p) => (p.bitrate, p.sample_rate),
+            None => (item.bitrate, item.sample_rate),
         };
 
         let result: Result<GpodTrackRef, String> = (|| {
             let src = c_string(source)?;
             let title = c_string(&item.title)?;
             let artist = c_string(&item.artist)?;
+            let album_artist = c_string(&item.album_artist)?;
             let album = c_string(&item.album)?;
+            let composer = c_string(&item.composer)?;
             let genre = c_string(&item.genre)?;
-            let mut err: *mut std::os::raw::c_char = std::ptr::null_mut();
-            let track_ref = unsafe {
-                gpod_import_track(
-                    db,
-                    src.as_ptr(),
-                    title.as_ptr(),
-                    artist.as_ptr(),
-                    album.as_ptr(),
-                    genre.as_ptr(),
-                    item.track_number,
-                    item.year,
-                    duration_ms,
-                    &mut err,
-                )
+            let spec = GpodImportSpec {
+                source_file_path: src.as_ptr(),
+                title: title.as_ptr(),
+                artist: artist.as_ptr(),
+                albumartist: album_artist.as_ptr(),
+                album: album.as_ptr(),
+                composer: composer.as_ptr(),
+                genre: genre.as_ptr(),
+                track_nr: item.track_number,
+                track_count: item.track_count,
+                cd_nr: item.disc_number,
+                disc_count: item.disc_count,
+                year: item.year,
+                duration_ms,
+                bitrate,
+                samplerate: sample_rate,
             };
+            let mut err: *mut std::os::raw::c_char = std::ptr::null_mut();
+            let track_ref = unsafe { gpod_import_track(db, &spec, &mut err) };
             if track_ref.is_null() {
                 let msg =
                     unsafe { take_c_string(err) }.unwrap_or_else(|| "unknown error".into());
@@ -471,48 +483,65 @@ pub async fn import_files(
     .await
 }
 
+/// Full inspector save. Every field is sent, so unlike set_field this stamps
+/// blanks too — clearing Album Artist in the panel must actually clear it.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackFields {
+    pub title: String,
+    pub artist: String,
+    pub album_artist: String,
+    pub album: String,
+    pub composer: String,
+    pub genre: String,
+    pub track_number: i32,
+    pub track_count: i32,
+    pub disc_number: i32,
+    pub disc_count: i32,
+    pub year: i32,
+}
+
 #[tauri::command]
 pub async fn update_track(
     state: State<'_, SharedLibrary>,
     id: String,
-    title: String,
-    artist: String,
-    album: String,
-    genre: String,
-    track_number: i32,
-    year: i32,
+    fields: TrackFields,
 ) -> Result<LibrarySnapshot, String> {
     let lib = state.inner().clone();
     blocking(move || {
         let mut lib = lib.lock().unwrap();
         let db = lib.db()?;
         let track = lib.resolve(&id).ok_or("Track no longer exists.")?;
-        let (t, ar, al, g) = (
-            c_string(&title)?,
-            c_string(&artist)?,
-            c_string(&album)?,
-            c_string(&genre)?,
+        let (t, ar, aa, al, co, g) = (
+            c_string(&fields.title)?,
+            c_string(&fields.artist)?,
+            c_string(&fields.album_artist)?,
+            c_string(&fields.album)?,
+            c_string(&fields.composer)?,
+            c_string(&fields.genre)?,
         );
-        unsafe {
-            gpod_update_track_metadata(
-                db,
-                track,
-                t.as_ptr(),
-                ar.as_ptr(),
-                al.as_ptr(),
-                g.as_ptr(),
-                track_number,
-                year,
-            );
-        }
+        let edit = GpodTrackEdit {
+            title: t.as_ptr(),
+            artist: ar.as_ptr(),
+            albumartist: aa.as_ptr(),
+            album: al.as_ptr(),
+            composer: co.as_ptr(),
+            genre: g.as_ptr(),
+            track_nr: fields.track_number,
+            track_count: fields.track_count,
+            cd_nr: fields.disc_number,
+            disc_count: fields.disc_count,
+            year: fields.year,
+        };
+        unsafe { gpod_update_track_metadata(db, track, &edit) };
         lib.save()?;
         Ok(lib.snapshot())
     })
     .await
 }
 
-/// Bulk single-field edit. gpod_update_track_metadata leaves NULL strings and
-/// negative numbers unchanged, so only the requested field moves.
+/// Bulk single-field edit. GpodTrackEdit::unchanged() leaves every field
+/// alone, so only the one the caller names moves.
 #[tauri::command]
 pub async fn set_field(
     state: State<'_, SharedLibrary>,
@@ -525,19 +554,21 @@ pub async fn set_field(
         let mut lib = lib.lock().unwrap();
         let db = lib.db()?;
         let value_c = c_string(&value)?;
-        let null = std::ptr::null();
         for id in &ids {
             let Some(track) = lib.resolve(id) else {
                 continue;
             };
+            let mut edit = GpodTrackEdit::unchanged();
             let v = value_c.as_ptr();
-            let (t, ar, al, g) = match field.as_str() {
-                "artist" => (null, v, null, null),
-                "album" => (null, null, v, null),
-                "genre" => (null, null, null, v),
+            match field.as_str() {
+                "artist" => edit.artist = v,
+                "albumArtist" => edit.albumartist = v,
+                "album" => edit.album = v,
+                "composer" => edit.composer = v,
+                "genre" => edit.genre = v,
                 other => return Err(format!("Unknown field: {other}")),
-            };
-            unsafe { gpod_update_track_metadata(db, track, t, ar, al, g, -1, -1) };
+            }
+            unsafe { gpod_update_track_metadata(db, track, &edit) };
         }
         lib.save()?;
         Ok(lib.snapshot())

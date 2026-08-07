@@ -61,4 +61,6 @@ Classic. Volume requirements (learned the hard way):
   required; without it libgpod assumes an unknown model and silently skips
   writing artwork on `itdb_write`.
 - `src-tauri/examples/seed_podsim.rs` re-seeds a volume via the same
-  GpodBridge FFI the app uses.
+  GpodBridge FFI the app uses. Bitrates and play counts are invented
+  deterministically (the stub audio has none); `--enrich` backfills them
+  on an already-seeded volume in place.

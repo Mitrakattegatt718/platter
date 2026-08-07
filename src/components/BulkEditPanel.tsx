@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { GenreField } from "@/components/GenreField";
+import type { BulkField } from "@/lib/api";
 import type { Track } from "@/lib/types";
 
 /** The one value they all carry, or null when they disagree or are blank. */
@@ -36,7 +37,14 @@ function summarize(values: string[]): string {
   return `${unique.length} values`;
 }
 
-type BulkField = "artist" | "album" | "genre";
+/** Label per field, in the order the panel renders them. */
+const FIELD_LABELS: Record<BulkField, string> = {
+  artist: "Artist",
+  albumArtist: "Album Artist",
+  album: "Album",
+  composer: "Composer",
+  genre: "Genre",
+};
 
 /** Shown when more than one track is selected. Drafts prefill only when the
  * selection already agrees; one Apply at the end stamps JUST the fields the
@@ -56,7 +64,9 @@ export function BulkEditPanel({
 }) {
   const [initial] = useState<Record<BulkField, string>>({
     artist: shared(tracks.map((t) => t.artist)) ?? "",
+    albumArtist: shared(tracks.map((t) => t.albumArtist)) ?? "",
     album: shared(tracks.map((t) => t.album)) ?? "",
+    composer: shared(tracks.map((t) => t.composer)) ?? "",
     genre: shared(tracks.map((t) => t.genre)) ?? "",
   });
   const [draft, setDraft] = useState(initial);
@@ -114,11 +124,27 @@ export function BulkEditPanel({
             title="Applies to every selected track, whether or not they agree today"
           />
         </Field>
+        <Field label="Album Artist" mixed={initial.albumArtist === ""}>
+          <Input
+            placeholder="Album Artist"
+            value={draft.albumArtist}
+            onChange={(e) => setDraft((d) => ({ ...d, albumArtist: e.target.value }))}
+            title="Sets what the iPod groups these albums under — the fix for a compilation split across 15 artists"
+          />
+        </Field>
         <Field label="Album" mixed={initial.album === ""}>
           <Input
             placeholder="Album"
             value={draft.album}
             onChange={(e) => setDraft((d) => ({ ...d, album: e.target.value }))}
+            title="Applies to every selected track, whether or not they agree today"
+          />
+        </Field>
+        <Field label="Composer" mixed={initial.composer === ""}>
+          <Input
+            placeholder="Composer"
+            value={draft.composer}
+            onChange={(e) => setDraft((d) => ({ ...d, composer: e.target.value }))}
             title="Applies to every selected track, whether or not they agree today"
           />
         </Field>
@@ -188,7 +214,11 @@ export function BulkEditPanel({
         </AlertDialog>
         <div className="flex-1" />
         <Button type="submit" size="sm" disabled={changed.length === 0 || busy || applying}>
-          {applying ? "Applying…" : changed.length > 0 ? `Apply ${changed.length === 1 ? changed[0][0].toUpperCase() + changed[0].slice(1) : `${changed.length} Fields`} to ${tracks.length} Tracks` : "No Changes"}
+          {applying
+            ? "Applying…"
+            : changed.length > 0
+              ? `Apply ${changed.length === 1 ? FIELD_LABELS[changed[0]] : `${changed.length} Fields`} to ${tracks.length} Tracks`
+              : "No Changes"}
         </Button>
       </div>
     </form>

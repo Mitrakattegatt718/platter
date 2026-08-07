@@ -17,17 +17,43 @@ pub struct Track {
     pub id: String,
     pub title: String,
     pub artist: String,
+    /// Empty when unset — which is meaningful: the Classic groups albums by
+    /// this field and only falls back to `artist` when it's absent.
+    pub album_artist: String,
     pub album: String,
+    pub composer: String,
     pub genre: String,
     pub file_type: String,
     pub track_number: i32,
+    /// Tracks on this disc, 0 when unset — the "of 12" in "3 of 12".
+    pub track_count: i32,
+    pub disc_number: i32,
+    pub disc_count: i32,
     pub year: i32,
     pub bitrate: i32,
+    /// Hz; 0 when the DB never recorded one.
+    pub sample_rate: i32,
     pub duration_ms: i32,
     pub size_bytes: i64,
     /// Unix epoch seconds; None when the device never recorded one.
     pub date_added: Option<i64>,
     pub has_artwork: bool,
+    /// Lifetime plays as of this open. libgpod merges the device's "Play
+    /// Counts" file during itdb_parse, so fresh plays are already included —
+    /// but only in memory until the next save writes them into the iTunesDB.
+    /// `rating` and `last_played` arrive by the same route.
+    pub play_count: i32,
+    /// 0-100, 20 per star. 0 = unrated.
+    pub rating: i32,
+    /// Unix epoch seconds of the LAST play; None when never played. The
+    /// device keeps no history beyond this one timestamp.
+    pub last_played: Option<i64>,
+    /// The DB's own colon-separated device path, e.g.
+    /// ":iPod_Control:Music:F04:ABCD.mp3". Empty when the DB has none.
+    pub ipod_path: String,
+    /// False means the DB has a record with no audio file behind it.
+    pub transferred: bool,
+    pub has_drm: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -194,16 +220,28 @@ impl Library {
                 id: ptr.to_string(),
                 title: take(info.title),
                 artist: take(info.artist),
+                album_artist: take(info.albumartist),
                 album: take(info.album),
+                composer: take(info.composer),
                 genre: take(info.genre),
                 file_type: take(info.filetype),
                 track_number: info.track_nr,
+                track_count: info.track_count,
+                disc_number: info.cd_nr,
+                disc_count: info.disc_count,
                 year: info.year,
                 bitrate: info.bitrate,
+                sample_rate: info.samplerate,
                 duration_ms: info.duration_ms,
                 size_bytes: info.size_bytes,
                 date_added: (info.time_added > 0).then_some(info.time_added),
                 has_artwork: info.has_artwork == 1,
+                play_count: info.playcount,
+                rating: info.rating,
+                last_played: (info.time_played > 0).then_some(info.time_played),
+                ipod_path: take(info.ipod_path),
+                transferred: info.transferred == 1,
+                has_drm: info.has_drm == 1,
             });
         }
         unsafe { gpod_tracks_collect_free(array, count) };

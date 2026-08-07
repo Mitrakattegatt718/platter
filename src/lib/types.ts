@@ -2,17 +2,52 @@ export interface Track {
   id: string;
   title: string;
   artist: string;
+  /** Blank when unset — the iPod then groups the album under `artist`. */
+  albumArtist: string;
   album: string;
+  composer: string;
   genre: string;
   fileType: string;
   trackNumber: number;
+  /** Tracks on this disc; 0 when unset. */
+  trackCount: number;
+  discNumber: number;
+  discCount: number;
   year: number;
   bitrate: number;
+  /** Hz; 0 when the database never recorded one. */
+  sampleRate: number;
   durationMs: number;
   sizeBytes: number;
   /** Unix epoch seconds; null when the device never recorded one. */
   dateAdded: number | null;
   hasArtwork: boolean;
+  /** Lifetime plays recorded by the device. */
+  playCount: number;
+  /** 0–100, 20 per star. 0 = unrated. */
+  rating: number;
+  /** Unix epoch seconds of the last play; null when never played. */
+  lastPlayed: number | null;
+  /** Device path in the database's colon form, e.g. ":iPod_Control:Music:F04:X.mp3". */
+  ipodPath: string;
+  /** False means a database record with no audio file behind it. */
+  transferred: boolean;
+  hasDrm: boolean;
+}
+
+/** Fields the inspector writes back. Sent whole, so blanks clear. */
+export interface TrackFields {
+  title: string;
+  artist: string;
+  albumArtist: string;
+  album: string;
+  composer: string;
+  genre: string;
+  trackNumber: number;
+  trackCount: number;
+  discNumber: number;
+  discCount: number;
+  year: number;
 }
 
 export interface Capacity {
@@ -38,11 +73,19 @@ export interface PendingImport {
   filePath: string;
   title: string;
   artist: string;
+  albumArtist: string;
   album: string;
+  composer: string;
   genre: string;
   trackNumber: number;
+  trackCount: number;
+  discNumber: number;
+  discCount: number;
   year: number;
   durationMs: number;
+  /** Read off the stream, not the tags; 0 when unknown. */
+  bitrate: number;
+  sampleRate: number;
   artworkPath: string | null;
   artworkDataUrl: string | null;
 }

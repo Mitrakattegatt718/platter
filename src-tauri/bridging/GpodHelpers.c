@@ -8,6 +8,7 @@
 #include <glib.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <time.h>
 #include <stdio.h>
 
@@ -89,18 +90,29 @@ static void fill_info(Itdb_Track* tr, GpodTrackInfo* out) {
     out->ref = (GpodTrackRef)tr;
     out->title = dup_or_null(tr->title);
     out->artist = dup_or_null(tr->artist);
+    out->albumartist = dup_or_null(tr->albumartist);
     out->album = dup_or_null(tr->album);
+    out->composer = dup_or_null(tr->composer);
     out->genre = dup_or_null(tr->genre);
     out->filetype = dup_or_null(tr->filetype);
+    out->ipod_path = dup_or_null(tr->ipod_path);
     out->track_nr = tr->track_nr;
+    out->track_count = tr->tracks;
     out->cd_nr = tr->cd_nr;
+    out->disc_count = tr->cds;
     out->year = tr->year;
     out->bitrate = tr->bitrate;
+    out->samplerate = tr->samplerate;
     out->duration_ms = tr->tracklen;
     out->size_bytes = (long long)tr->size;
     // libgpod already converts the DB's Mac-epoch timestamps to host time_t.
     out->time_added = (long long)tr->time_added;
     out->has_artwork = (tr->has_artwork == PODSYNC_HAS_ARTWORK_YES) ? 1 : 0;
+    out->playcount = (int)tr->playcount;
+    out->rating = (int)tr->rating;
+    out->time_played = (long long)tr->time_played;
+    out->transferred = tr->transferred ? 1 : 0;
+    out->has_drm = (tr->drm_userid != 0) ? 1 : 0;
 }
 
 int gpod_track_at(GpodDBRef dbRef, int index, GpodTrackInfo* outInfo) {
@@ -116,10 +128,14 @@ void gpod_free_track_info(GpodTrackInfo* info) {
     if (!info) return;
     free(info->title);
     free(info->artist);
+    free(info->albumartist);
     free(info->album);
+    free(info->composer);
     free(info->genre);
     free(info->filetype);
-    info->title = info->artist = info->album = info->genre = info->filetype = NULL;
+    free(info->ipod_path);
+    info->title = info->artist = info->albumartist = info->album = NULL;
+    info->composer = info->genre = info->filetype = info->ipod_path = NULL;
 }
 
 GpodTrackInfo* gpod_tracks_collect(GpodDBRef dbRef, int* outCount) {
@@ -150,25 +166,42 @@ void gpod_tracks_collect_free(GpodTrackInfo* array, int count) {
 }
 
 GpodTrackRef gpod_import_track(GpodDBRef dbRef,
-                                const char* sourceFilePath,
-                                const char* title,
-                                const char* artist,
-                                const char* album,
-                                const char* genre,
-                                int track_nr,
-                                int year,
-                                int duration_ms,
+                                const GpodImportSpec* spec,
                                 char** errOut) {
+    if (!spec || !spec->source_file_path) return NULL;
+    const char* sourceFilePath = spec->source_file_path;
     Itdb_iTunesDB* itdb = (Itdb_iTunesDB*)dbRef;
     Itdb_Track* track = itdb_track_new();
 
-    track->title = title ? g_strdup(title) : g_strdup("Unknown Title");
-    track->artist = artist ? g_strdup(artist) : g_strdup("Unknown Artist");
-    track->album = album ? g_strdup(album) : g_strdup("Unknown Album");
-    track->genre = genre ? g_strdup(genre) : g_strdup("");
-    track->track_nr = track_nr;
-    track->year = year;
-    track->tracklen = duration_ms;
+    track->title = spec->title ? g_strdup(spec->title) : g_strdup("Unknown Title");
+    track->artist = spec->artist ? g_strdup(spec->artist) : g_strdup("Unknown Artist");
+    track->album = spec->album ? g_strdup(spec->album) : g_strdup("Unknown Album");
+    track->genre = spec->genre ? g_strdup(spec->genre) : g_strdup("");
+    // Left NULL when absent: an empty albumartist is not the same as none —
+    // the Classic falls back to the track artist only when the field is unset.
+    if (spec->albumartist && *spec->albumartist) {
+        track->albumartist = g_strdup(spec->albumartist);
+    }
+    if (spec->composer && *spec->composer) {
+        track->composer = g_strdup(spec->composer);
+    }
+    track->track_nr = spec->track_nr;
+    track->tracks = spec->track_count;
+    track->cd_nr = spec->cd_nr;
+    track->cds = spec->disc_count;
+    track->year = spec->year;
+    track->tracklen = spec->duration_ms;
+    // Both stay 0 when the tag reader couldn't work them out; the iPod copes,
+    // and 0 is what the DB held before this was passed through at all.
+    track->bitrate = spec->bitrate;
+    // libgpod's samplerate is a guint16, so anything past 65535 Hz would wrap
+    // to a plausible-looking wrong number. convert.rs already brings hi-res
+    // down to the 44.1/48 kHz family before import, so this only fires if
+    // something bypasses that — leave 0 rather than write a lie. Assigned
+    // before itdb_track_add below, which mirrors it into samplerate2.
+    if (spec->samplerate > 0 && spec->samplerate <= 65535) {
+        track->samplerate = (guint16)spec->samplerate;
+    }
 
     // Determine filetype from extension for the mediatype flag.
     const char* ext = strrchr(sourceFilePath, '.');
@@ -208,31 +241,70 @@ GpodTrackRef gpod_import_track(GpodDBRef dbRef,
     }
 
     fprintf(stderr, "[podsync] imported OK: \"%s\" -> ipod_path=%s transferred=%d size=%u\n",
-            title, track->ipod_path ? track->ipod_path : "(null)",
+            track->title, track->ipod_path ? track->ipod_path : "(null)",
             track->transferred, track->size);
 
     return (GpodTrackRef)track;
 }
 
+/// Replaces a string field, or clears it back to NULL when the caller passes
+/// "". Clearing matters for albumartist and composer: an empty string is a
+/// present-but-blank tag, which the Classic sorts under its own heading.
+static void set_str(gchar** field, const char* value) {
+    if (!value) return;
+    g_free(*field);
+    *field = *value ? g_strdup(value) : NULL;
+}
+
 int gpod_update_track_metadata(GpodDBRef dbRef,
                                 GpodTrackRef trackRef,
-                                const char* title,
-                                const char* artist,
-                                const char* album,
-                                const char* genre,
-                                int track_nr,
-                                int year) {
+                                const GpodTrackEdit* edit) {
+    (void)dbRef;
+    Itdb_Track* track = (Itdb_Track*)trackRef;
+    if (!track || !edit) return 0;
+
+    // title/artist/album/genre keep the old replace-with-whatever-came-in
+    // behaviour; set_str's clear-on-empty only bites for fields the iPod
+    // treats as optional.
+    if (edit->title)  { g_free(track->title);  track->title  = g_strdup(edit->title); }
+    if (edit->artist) { g_free(track->artist); track->artist = g_strdup(edit->artist); }
+    if (edit->album)  { g_free(track->album);  track->album  = g_strdup(edit->album); }
+    if (edit->genre)  { g_free(track->genre);  track->genre  = g_strdup(edit->genre); }
+    set_str(&track->albumartist, edit->albumartist);
+    set_str(&track->composer, edit->composer);
+    if (edit->track_nr >= 0) track->track_nr = edit->track_nr;
+    if (edit->track_count >= 0) track->tracks = edit->track_count;
+    if (edit->cd_nr >= 0) track->cd_nr = edit->cd_nr;
+    if (edit->disc_count >= 0) track->cds = edit->disc_count;
+    if (edit->year >= 0) track->year = edit->year;
+
+    return 1;
+}
+
+unsigned long gpod_abi_size(int which) {
+    switch (which) {
+        case 0: return (unsigned long)sizeof(GpodTrackInfo);
+        case 1: return (unsigned long)sizeof(GpodTrackEdit);
+        case 2: return (unsigned long)sizeof(GpodImportSpec);
+        default: return 0;
+    }
+}
+
+unsigned long gpod_abi_last_offset(int which) {
+    switch (which) {
+        case 0: return (unsigned long)offsetof(GpodTrackInfo, has_drm);
+        case 1: return (unsigned long)offsetof(GpodTrackEdit, year);
+        case 2: return (unsigned long)offsetof(GpodImportSpec, samplerate);
+        default: return 0;
+    }
+}
+
+int gpod_set_track_stats(GpodDBRef dbRef, GpodTrackRef trackRef, int bitrate, int playcount) {
     (void)dbRef;
     Itdb_Track* track = (Itdb_Track*)trackRef;
     if (!track) return 0;
-
-    if (title)  { g_free(track->title);  track->title  = g_strdup(title); }
-    if (artist) { g_free(track->artist); track->artist = g_strdup(artist); }
-    if (album)  { g_free(track->album);  track->album  = g_strdup(album); }
-    if (genre)  { g_free(track->genre);  track->genre  = g_strdup(genre); }
-    if (track_nr >= 0) track->track_nr = track_nr;
-    if (year >= 0) track->year = year;
-
+    if (bitrate > 0) track->bitrate = (guint32)bitrate;
+    if (playcount >= 0) track->playcount = (guint32)playcount;
     return 1;
 }
 
