@@ -252,16 +252,10 @@ impl Library {
     }
 
     fn capacity(&self) -> Option<Capacity> {
-        let mount = self.mount_point.as_deref()?;
-        let c_mount = CString::new(mount).ok()?;
-        let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::statfs(c_mount.as_ptr(), &mut stat) } != 0 {
-            return None;
-        }
-        let bsize = stat.f_bsize as i64;
+        let info = crate::fsinfo::fs_info(std::path::Path::new(self.mount_point.as_deref()?))?;
         Some(Capacity {
-            free_bytes: stat.f_bavail as i64 * bsize,
-            total_bytes: stat.f_blocks as i64 * bsize,
+            free_bytes: info.free_bytes as i64,
+            total_bytes: info.total_bytes as i64,
         })
     }
 

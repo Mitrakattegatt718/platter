@@ -35,6 +35,8 @@ import { ImportDialog } from "@/components/ImportDialog";
 import { DisconnectedView } from "@/components/DisconnectedView";
 import { MountPickerDialog } from "@/components/MountPickerDialog";
 import { ProgressBanner } from "@/components/ProgressBanner";
+import { ConvertView } from "@/components/ConvertView";
+import { ViewTabs } from "@/components/ViewTabs";
 import { TrackEditPanel } from "@/components/TrackEditPanel";
 import { TrackList } from "@/components/TrackList";
 import { api, invalidateArtwork } from "@/lib/api";
@@ -46,6 +48,7 @@ import {
   type TrackGroup,
 } from "@/lib/grouping";
 import type {
+  AppView,
   ImportOutcome,
   ImportResult,
   LibrarySnapshot,
@@ -98,7 +101,17 @@ export default function App() {
   const [showMountPicker, setShowMountPicker] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
   const [detailWidth, setDetailWidth] = useState(440);
+  const [view, setView] = useState<AppView>(
+    () => (localStorage.getItem("appView") as AppView) || "library",
+  );
+  /** Fraction of the running conversion, surfaced on the header tab so the
+   * job stays visible from the Library tab. Null when nothing is running. */
+  const [convertProgress, setConvertProgress] = useState<number | null>(null);
   const detailRef = useRef<HTMLDivElement>(null);
+
+  // Read inside callbacks that must not re-subscribe on every snapshot.
+  const snapshotRef = useRef(snapshot);
+  snapshotRef.current = snapshot;
 
   const isOpen = snapshot.mountPoint !== null;
   const isOpenRef = useRef(isOpen);
@@ -110,6 +123,25 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("trackSort", sort);
   }, [sort]);
+  useEffect(() => {
+    localStorage.setItem("appView", view);
+  }, [view]);
+
+  // ⌘1 / ⌘2 switch tabs, the way a native app's View menu would.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.metaKey || e.altKey || e.ctrlKey) return;
+      if (e.key === "1") {
+        e.preventDefault();
+        setView("library");
+      } else if (e.key === "2") {
+        e.preventDefault();
+        setView("convert");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     const title = snapshot.mountPoint ? `iPod (${snapshot.mountPoint})` : "PodSync";
@@ -136,6 +168,19 @@ export default function App() {
       setProgress(null);
     }
   }, []);
+
+  /// A conversion that landed on the iPod changed the library underneath us;
+  /// re-open it so the track list and capacity reflect what is actually there.
+  const reloadLibrary = useCallback(() => {
+    const mount = snapshotRef.current.mountPoint;
+    if (!mount) return;
+    run(api.openLibrary(mount)).then((next) => {
+      if (next) {
+        invalidateArtwork();
+        setSnapshot(next);
+      }
+    });
+  }, [run]);
 
   const applySnapshot = useCallback((next: LibrarySnapshot) => {
     setSnapshot(next);
@@ -375,15 +420,15 @@ export default function App() {
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
-      {/* Tools row only exists once a library is open — while disconnected the
-          connect surface owns the whole window (the native titlebar still
-          shows "PodSync"). */}
-      {isOpen && (
-        <header className="flex h-11 shrink-0 items-center border-b px-3">
+      {/* The tools row is always present now: converting to a folder on the
+          Mac is a legitimate use with no iPod attached. Library-specific
+          chrome inside it still appears only once a library is open. */}
+      <header className="flex h-11 shrink-0 items-center gap-3 border-b px-3">
         <span className="text-sm font-semibold">
           {snapshot.mountPoint ? `iPod (${snapshot.mountPoint})` : "PodSync"}
         </span>
-        <CapacityGauge capacity={snapshot.capacity} />
+        {isOpen && <CapacityGauge capacity={snapshot.capacity} />}
+        <ViewTabs view={view} onChange={setView} convertProgress={convertProgress} />
         <div className="flex-1" />
         <div className="flex items-center gap-1">
           <Button
@@ -394,15 +439,17 @@ export default function App() {
           >
             <Usb /> Connect
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!isOpen || busy}
-            title="Import MP3/M4A directly, or convert FLAC, WAV and other lossless files to Apple Lossless — or drag files and folders onto the track list"
-            onClick={() => setShowImporter(true)}
-          >
-            <Plus /> Add Songs
-          </Button>
+          {view === "library" && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!isOpen || busy}
+              title="Import MP3/M4A directly, or convert FLAC, WAV and other lossless files to Apple Lossless — or drag files and folders onto the track list"
+              onClick={() => setShowImporter(true)}
+            >
+              <Plus /> Add Songs
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -412,6 +459,7 @@ export default function App() {
           >
             <EjectIcon /> Eject
           </Button>
+          {view === "library" && (
           <DropdownMenu>
             <DropdownMenuTrigger
               render={
@@ -452,11 +500,14 @@ export default function App() {
               </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu>
+          )}
         </div>
       </header>
-      )}
 
       <div className="relative flex min-h-0 flex-1">
+        <div
+          className={`flex min-h-0 flex-1 ${view === "library" ? "" : "hidden"}`}
+        >
         {isOpen ? (
           <>
             <div className="min-w-80 flex-1">
@@ -563,6 +614,17 @@ export default function App() {
             onChooseManually={() => setShowMountPicker(true)}
           />
         )}
+        </div>
+
+        {/* Kept mounted rather than conditionally rendered: switching tabs
+            mid-job must not discard the queue or the log. */}
+        <div className={`min-h-0 flex-1 ${view === "convert" ? "" : "hidden"}`}>
+          <ConvertView
+            ipodMount={snapshot.mountPoint}
+            onLibraryChanged={reloadLibrary}
+            onProgressChange={setConvertProgress}
+          />
+        </div>
 
         <ProgressBanner busy={busy} progress={progress} />
       </div>

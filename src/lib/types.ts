@@ -111,6 +111,117 @@ export interface Progress {
   fraction: number | null;
 }
 
+/* ------------------------------------------------------------- converter */
+
+export type TargetFormat = "alac" | "aac" | "mp3" | "aiff" | "wav" | "flac";
+
+/** Mirrors the Rust `Rate` enum's serde shape: unit variant or single-field
+ * struct variant. */
+export type Rate = "lossless" | { cbr: number } | { vbr: number };
+
+export interface TargetSpec {
+  format: TargetFormat;
+  rate: Rate;
+  /** Clamp to 16-bit / ≤48 kHz / stereo. Forced on for an iPod destination. */
+  ipodSafe: boolean;
+}
+
+export interface FormatOption {
+  format: TargetFormat;
+  label: string;
+  ext: string;
+  ipodPlayable: boolean;
+  lossless: boolean;
+  /** Non-null means the option is greyed out, with this as the reason. */
+  unavailable: string | null;
+  encoder: string;
+}
+
+export interface SourceRow {
+  id: number;
+  srcPath: string;
+  display: string;
+  cueTrack: number | null;
+  codec: string;
+  sampleRate: number;
+  channels: number;
+  bits: number;
+  /** 0 = unknown, never "empty". */
+  durationS: number;
+  sourceBytes: number;
+  /** Why this row can't go to the chosen format, if it can't. */
+  blocked: string | null;
+}
+
+export type Destination = { kind: "folder"; path: string } | { kind: "ipod" };
+
+export type FitVerdict = "fits" | "tight" | "doesNotFit" | "unknown";
+
+export interface Estimate {
+  fileCount: number;
+  blockedCount: number;
+  totalDurationS: number;
+  sourceBytes: number;
+  /** Headline number. */
+  likelyBytes: number;
+  /** Pessimistic bound — what the verdict is computed against. */
+  highBytes: number;
+  /** True when the arithmetic really is exact, so the UI can drop "about". */
+  exact: boolean;
+  unknownDurationCount: number;
+  destPath: string;
+  destFreeBytes: number;
+  destTotalBytes: number;
+  destFsType: string;
+  /** Boot-volume free space; present only for an iPod destination. */
+  scratchFreeBytes: number | null;
+  headroomBytes: number;
+  verdict: FitVerdict;
+  oversizeFiles: string[];
+  notes: string[];
+}
+
+export interface ConvertEstimateResult {
+  estimate: Estimate;
+  rows: SourceRow[];
+}
+
+export interface JobSummary {
+  jobId: number;
+  converted: number;
+  failed: number;
+  cancelled: boolean;
+  /** What was actually written — the honest check on the estimate. */
+  outputBytes: number;
+  outputDir: string | null;
+  failures: string[];
+}
+
+export interface ConvertProgress {
+  jobId: number;
+  phase: "scanning" | "converting" | "importing" | "cleanup";
+  done: number;
+  total: number;
+  fraction: number | null;
+  current: string;
+  /** 0…1 inside the current file; null for stream copies and unknown lengths. */
+  fileFraction: number | null;
+}
+
+export interface ConvertLogLine {
+  seq: number;
+  level: "info" | "warn" | "error" | "cmd";
+  file: string | null;
+  line: string;
+}
+
+export interface ConvertLogBatch {
+  jobId: number;
+  lines: ConvertLogLine[];
+}
+
+export type AppView = "library" | "convert";
+
 export type TrackGrouping = "none" | "artist" | "album" | "genre";
 export type TrackSort = "title" | "artist" | "albumOrder" | "recentlyAdded";
 

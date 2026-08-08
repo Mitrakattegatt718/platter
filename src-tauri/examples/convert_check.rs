@@ -24,9 +24,15 @@ fn main() {
     let out_dir = std::env::temp_dir().join("convert-check");
     let _ = std::fs::remove_dir_all(&out_dir);
     let total = items.len();
-    let results = convert::prepare_batch(&items, &out_dir, &|n, name| {
-        eprintln!("[{n}/{total}] {name}");
-    });
+    let results = convert::prepare_batch(
+        &items,
+        &out_dir,
+        &convert::TargetSpec::alac(),
+        &convert::ConvertControl::default(),
+        &convert::ProgressOnly(&|n, name| {
+            eprintln!("[{n}/{total}] {name}");
+        }),
+    );
 
     for (item, prepared) in items.iter().zip(&results) {
         match prepared {
@@ -34,6 +40,7 @@ fn main() {
             convert::Prepared::Rejected(reason) => {
                 println!("REJECTED\t{}\t{reason}", item.display())
             }
+            convert::Prepared::Cancelled => println!("CANCELLED\t{}", item.display()),
         }
     }
 }

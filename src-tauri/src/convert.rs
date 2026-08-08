@@ -64,9 +64,170 @@ const ART_NORM_OPTS: [&str; 8] = [
     "3",
 ];
 
+// --------------------------------------------------------------- target format
+
+/// What the converter can produce. Everything except FLAC is on Apple's
+/// published audio list for the Classic 6g/7g.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TargetFormat {
+    Alac,
+    Aac,
+    Mp3,
+    Aiff,
+    Wav,
+    /// Mac-only. Offered so the destination check has something to refuse.
+    Flac,
+}
+
+impl TargetFormat {
+    pub fn ext(self) -> &'static str {
+        match self {
+            Self::Alac | Self::Aac => "m4a",
+            Self::Mp3 => "mp3",
+            Self::Aiff => "aiff",
+            Self::Wav => "wav",
+            Self::Flac => "flac",
+        }
+    }
+
+    pub fn ipod_playable(self) -> bool {
+        !matches!(self, Self::Flac)
+    }
+
+    pub fn is_lossless(self) -> bool {
+        !matches!(self, Self::Aac | Self::Mp3)
+    }
+
+    /// The wav muxer refuses any video stream outright — a mapped picture
+    /// exits non-zero with a zero-byte output, so art is never attempted.
+    pub fn can_embed_art(self) -> bool {
+        !matches!(self, Self::Wav)
+    }
+
+    /// Encoders that want planar float. Rounding to s16 just to hand the
+    /// encoder float again would add a dither noise floor for nothing.
+    fn wants_float(self, aac_at: bool) -> bool {
+        matches!(self, Self::Mp3) || (matches!(self, Self::Aac) && !aac_at)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Alac => "Apple Lossless",
+            Self::Aac => "AAC",
+            Self::Mp3 => "MP3",
+            Self::Aiff => "AIFF",
+            Self::Wav => "WAV",
+            Self::Flac => "FLAC",
+        }
+    }
+}
+
+/// How much bitrate to spend. `Lossless` is the only legal value for a
+/// lossless format; `TargetSpec::validate` enforces the pairing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Rate {
+    Lossless,
+    /// Constant bitrate, kbps.
+    Cbr(u32),
+    /// Encoder VBR index, 0 = best. libmp3lame takes 0..=9, aac_at 0..=14.
+    Vbr(u8),
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetSpec {
+    pub format: TargetFormat,
+    pub rate: Rate,
+    /// Clamp to 16-bit / <=48 kHz / stereo. Always true for an iPod
+    /// destination; user-settable only when writing FLAC to a Mac folder.
+    pub ipod_safe: bool,
+}
+
+impl TargetSpec {
+    /// The target every pre-existing caller wants: what this app did before
+    /// the converter existed.
+    pub fn alac() -> Self {
+        Self {
+            format: TargetFormat::Alac,
+            rate: Rate::Lossless,
+            ipod_safe: true,
+        }
+    }
+
+    /// Out-of-range VBR indices are not cosmetic: aac_at clamps silently to
+    /// roughly 24 kbps, producing garbage that reports success.
+    pub fn validate(&self) -> Result<(), String> {
+        match (self.format.is_lossless(), self.rate) {
+            (true, Rate::Lossless) => Ok(()),
+            (false, Rate::Cbr(k)) if (96..=320).contains(&k) => Ok(()),
+            (false, Rate::Vbr(q)) => match self.format {
+                TargetFormat::Mp3 if q <= 9 => Ok(()),
+                TargetFormat::Aac if q <= 14 => Ok(()),
+                _ => Err("quality value out of range for this format".into()),
+            },
+            (true, _) => Err("lossless formats take no bitrate".into()),
+            (false, _) => Err("this format needs a bitrate or quality".into()),
+        }
+    }
+}
+
+/// Which optional encoders the ffmpeg we resolved was actually built with.
+/// Probed once from `-buildconf`, mirroring `resampler_args`.
+pub struct Encoders {
+    /// AudioToolbox AAC — better than the native encoder at every bitrate.
+    pub aac_at: bool,
+    /// ffmpeg ships no native MP3 encoder; without lame the option is dead.
+    pub lame: bool,
+}
+
+pub fn encoders() -> &'static Encoders {
+    static CACHE: OnceLock<Encoders> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let conf = tools()
+            .and_then(|t| {
+                Command::new(&t.ffmpeg)
+                    .args(["-hide_banner", "-buildconf"])
+                    .output()
+                    .ok()
+            })
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        Encoders {
+            aac_at: conf.contains("--enable-audiotoolbox"),
+            lame: conf.contains("--enable-libmp3lame"),
+        }
+    })
+}
+
 // ------------------------------------------------------------------ tool paths
 
+/// The sidecar staged next to the executable: `Contents/MacOS/<name>` in a
+/// bundle, `target/<profile>/<name>` under `cargo run` — tauri-build stages it
+/// into the cargo target dir, so one exe-relative lookup covers both.
+///
+/// The `..` candidate is for `cargo test`, whose binaries live one level down
+/// in `target/<profile>/deps/`. Without it every ffmpeg-dependent test would
+/// silently fall through to the system binary and the bundled path would never
+/// be exercised.
+fn bundled_tool(name: &str) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    for candidate in [dir.join(name), dir.join("..").join(name)] {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn find_tool(name: &str) -> Option<PathBuf> {
+    if let Some(bundled) = bundled_tool(name) {
+        return Some(bundled);
+    }
+    // Second chance: a developer building without staged binaries, or a user
+    // who would rather PodSync used their own ffmpeg.
     for prefix in ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"] {
         let p = Path::new(prefix).join(name);
         if p.is_file() {
@@ -158,7 +319,7 @@ fn sanitize(s: &str) -> String {
 /// iPod Classic tops out at 48 kHz. Stay inside the source's own clock family
 /// so resampling is a clean integer ratio: 88.2/176.4/352.8 -> 44.1,
 /// 96/192 -> 48.
-fn target_rate(rate: u32) -> u32 {
+pub fn target_rate(rate: u32) -> u32 {
     if rate == 0 {
         return 44100;
     }
@@ -198,6 +359,19 @@ pub struct MediaProbe {
     pub art_codec: Option<String>,
     pub art_w: u32,
     pub art_h: u32,
+    /// Seconds. 0 means "unknown", never "empty" — some containers report no
+    /// duration at all, and a size estimate must exclude those rather than
+    /// count them as free.
+    pub duration_s: f64,
+    /// Container bitrate in bits/s; 0 when absent.
+    pub bit_rate: u64,
+    /// Source file size in bytes, as ffprobe saw it.
+    pub file_bytes: u64,
+    /// True only when ffprobe actually reported `bits_per_raw_sample`. When
+    /// false, `bits` was inferred from the sample format, which cannot
+    /// distinguish 24-bit-in-s32 from true 32-bit — a 33% error in a raw-PCM
+    /// size estimate. Classification (`needs_work`) is unaffected either way.
+    pub bits_known: bool,
 }
 
 impl MediaProbe {
@@ -207,6 +381,20 @@ impl MediaProbe {
 
     fn is_lossless(&self) -> bool {
         self.codec.starts_with("pcm_") || LOSSLESS_CODECS.contains(&self.codec.as_str())
+    }
+
+    /// Bit depth to bill for when sizing raw PCM. 24-bit sources decode as
+    /// `s32` with no `bits_per_raw_sample`, and billing them at 32 overstates
+    /// a WAV/AIFF estimate by a third.
+    pub fn effective_bits(&self) -> u32 {
+        if self.bits_known && self.bits > 0 {
+            return self.bits;
+        }
+        match self.sample_fmt.trim_end_matches('p') {
+            "s32" | "flt" | "dbl" => 24,
+            _ if self.bits > 0 => self.bits,
+            _ => 16,
+        }
     }
 
     /// Whether the audio needs resampling/dithering/downmixing to fit the
@@ -224,13 +412,16 @@ impl MediaProbe {
 /// standalone images, which carry only a video stream. First stream of each
 /// type wins. None when ffprobe finds no streams at all; audio callers must
 /// additionally check `codec` is non-empty.
-fn probe_media(ffprobe: &Path, src: &Path) -> Option<MediaProbe> {
+pub fn probe_media(ffprobe: &Path, src: &Path) -> Option<MediaProbe> {
     let out = Command::new(ffprobe)
         .args([
             "-v",
             "error",
             "-show_entries",
-            "stream=codec_name,codec_type,width,height,sample_fmt,sample_rate,channels,bits_per_raw_sample",
+            // The format section is a required fallback, not a nicety: FLAC
+            // omits stream.bit_rate entirely and several containers omit
+            // stream.duration. Both sections come back from this one pass.
+            "stream=codec_name,codec_type,width,height,sample_fmt,sample_rate,channels,bits_per_raw_sample,duration,bit_rate:format=duration,size,bit_rate",
             "-of",
             "json",
         ])
@@ -240,28 +431,41 @@ fn probe_media(ffprobe: &Path, src: &Path) -> Option<MediaProbe> {
         .ok()?;
     let json: Value = serde_json::from_slice(&out.stdout).ok()?;
     let mut probe = MediaProbe::default();
+    // ffprobe reports some numerics as strings ("44100") and some as numbers
+    // depending on the field — accept both. `size` needs the full 64 bits: a
+    // DSD album image or a long WAV passes 4 GB and would wrap in a u32.
+    let num64 = |v: &Value| -> u64 {
+        v.as_u64()
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            .unwrap_or(0)
+    };
+    let num = |v: &Value| -> u32 { num64(v).min(u32::MAX as u64) as u32 };
     for stream in json["streams"].as_array()? {
         let ctype = stream["codec_type"].as_str().unwrap_or("");
         let codec = stream["codec_name"].as_str().unwrap_or("").to_string();
-        // ffprobe reports some numerics as strings ("44100") and some as
-        // numbers depending on the field — accept both.
-        let num = |v: &Value| -> u32 {
-            v.as_u64()
-                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-                .unwrap_or(0) as u32
-        };
         if ctype == "audio" && probe.codec.is_empty() {
             probe.codec = codec;
             probe.sample_rate = num(&stream["sample_rate"]);
             probe.channels = num(&stream["channels"]);
             probe.bits = num(&stream["bits_per_raw_sample"]);
+            probe.bits_known = probe.bits > 0;
             probe.sample_fmt = stream["sample_fmt"].as_str().unwrap_or("").to_string();
+            probe.duration_s = secs(&stream["duration"]);
+            probe.bit_rate = num64(&stream["bit_rate"]);
         } else if ctype == "video" && probe.art_codec.is_none() {
             probe.art_codec = Some(codec);
             probe.art_w = num(&stream["width"]);
             probe.art_h = num(&stream["height"]);
         }
     }
+    let format = &json["format"];
+    if probe.duration_s <= 0.0 {
+        probe.duration_s = secs(&format["duration"]);
+    }
+    if probe.bit_rate == 0 {
+        probe.bit_rate = num64(&format["bit_rate"]);
+    }
+    probe.file_bytes = num64(&format["size"]);
     if probe.bits == 0 {
         probe.bits = bits_from_sample_fmt(&probe.sample_fmt);
     }
@@ -270,6 +474,15 @@ fn probe_media(ffprobe: &Path, src: &Path) -> Option<MediaProbe> {
     } else {
         Some(probe)
     }
+}
+
+/// ffprobe writes durations as decimal strings ("212.386667") and sometimes as
+/// the literal "N/A". Anything unparseable is 0, meaning unknown.
+fn secs(v: &Value) -> f64 {
+    v.as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        .filter(|d: &f64| d.is_finite() && *d > 0.0)
+        .unwrap_or(0.0)
 }
 
 // ------------------------------------------------------------------ cue sheets
@@ -463,27 +676,37 @@ fn parse_cue(path: &Path) -> Option<CueSheet> {
 // ------------------------------------------------------------------ scanning
 
 /// One dropped file to prepare: either import `src` as-is, or convert it to
-/// `out_dir/dst_name` first (always the latter for cue-split tracks).
-/// `dst_name` carries a per-item subdirectory ("3/Song.m4a") so identical
-/// stems from different album folders can't collide in one scratch dir,
-/// while the file stem itself stays clean for the tag reader's filename
-/// fallback title.
+/// `out_dir/<dst_stem>.<target ext>` first (always the latter for cue-split
+/// tracks). `dst_stem` carries a per-item subdirectory ("3/Song") so identical
+/// stems from different album folders can't collide in one output dir, while
+/// the file stem itself stays clean for the tag reader's filename fallback
+/// title.
+///
+/// It deliberately carries **no extension**: the target format owns that, and
+/// a stem that already ended in ".m4a" is how you end up writing MP3 bytes
+/// into a file libgpod then copies to the device with an `M4A ` marker — an
+/// unplayable track with no error anywhere in the chain.
 pub struct WorkItem {
     pub src: PathBuf,
-    pub dst_name: String,
+    pub dst_stem: String,
     pub cue: Option<CueMeta>,
+    /// Filled in by the converter's queue, which probes on add. None means
+    /// "probe it yourself", which is what the drag-and-drop import path does.
+    pub probe: Option<MediaProbe>,
 }
 
 impl WorkItem {
     pub fn display(&self) -> String {
-        let of = |p: &Path| {
-            p.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| p.display().to_string())
-        };
         match &self.cue {
-            Some(_) => of(Path::new(&self.dst_name)),
-            None => of(&self.src),
+            Some(_) => Path::new(&self.dst_stem)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| self.dst_stem.clone()),
+            None => self
+                .src
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| self.src.display().to_string()),
         }
     }
 }
@@ -506,8 +729,9 @@ impl Scanner {
             .unwrap_or_else(|| "track".into());
         self.items.push(WorkItem {
             src: src.to_path_buf(),
-            dst_name: format!("{}/{}.m4a", self.items.len(), sanitize(&stem)),
+            dst_stem: format!("{}/{}", self.items.len(), sanitize(&stem)),
             cue: None,
+            probe: None,
         });
     }
 
@@ -518,13 +742,14 @@ impl Scanner {
             }
             self.items.push(WorkItem {
                 src: sheet.audio_file.clone(),
-                dst_name: format!(
-                    "{}/{:02} {}.m4a",
+                dst_stem: format!(
+                    "{}/{:02} {}",
                     self.items.len(),
                     meta.track_num,
                     sanitize(&meta.title)
                 ),
                 cue: Some(meta),
+                probe: None,
             });
         }
     }
@@ -631,6 +856,10 @@ pub enum Prepared {
     Ready(PathBuf),
     /// Not iPod material (lossy source in a lossless container, unreadable…).
     Rejected(String),
+    /// The job was cancelled before this item ran, or while it ran. Distinct
+    /// from Rejected on purpose — a cancelled item is not a failure and must
+    /// not be counted or reported as one.
+    Cancelled,
 }
 
 /// Best folder image to embed when the track carries no artwork of its own.
@@ -721,7 +950,183 @@ enum ArtPlan {
     File { path: PathBuf, norm: bool },
 }
 
-/// Convert one file (or one cue slice) to iPod-spec ALAC at `dst`.
+/// Codec selection and quality, as argv fragments.
+fn encoder_args(target: &TargetSpec) -> Vec<String> {
+    let s = |v: &str| v.to_string();
+    match target.format {
+        TargetFormat::Alac => vec![s("-c:a"), s("alac"), s("-sample_fmt"), s("s16p")],
+        TargetFormat::Aac => {
+            // aac_at is AudioToolbox's encoder — audibly better than the
+            // native one at the same bitrate, and present on every Mac.
+            let mut args = if encoders().aac_at {
+                match target.rate {
+                    Rate::Vbr(_) => vec![s("-c:a"), s("aac_at"), s("-aac_at_mode"), s("vbr")],
+                    _ => vec![s("-c:a"), s("aac_at"), s("-aac_at_mode"), s("cbr")],
+                }
+            } else {
+                vec![s("-c:a"), s("aac")]
+            };
+            match target.rate {
+                Rate::Cbr(kbps) => args.extend([s("-b:a"), format!("{kbps}k")]),
+                // The native encoder has no comparable VBR index; fall back to
+                // a bitrate rather than silently ignoring the setting.
+                Rate::Vbr(q) if encoders().aac_at => args.extend([s("-q:a"), q.to_string()]),
+                Rate::Vbr(q) => args.extend([s("-b:a"), format!("{}k", 256 - (q as u32 * 16))]),
+                Rate::Lossless => {}
+            }
+            args
+        }
+        TargetFormat::Mp3 => {
+            let mut args = vec![s("-c:a"), s("libmp3lame")];
+            match target.rate {
+                Rate::Cbr(kbps) => args.extend([s("-b:a"), format!("{kbps}k")]),
+                Rate::Vbr(q) => args.extend([s("-q:a"), q.to_string()]),
+                Rate::Lossless => {}
+            }
+            args
+        }
+        // AIFF is big-endian PCM, WAV little-endian. Getting these the wrong
+        // way round produces a file that plays as white noise.
+        TargetFormat::Aiff => vec![s("-c:a"), s("pcm_s16be")],
+        TargetFormat::Wav => vec![s("-c:a"), s("pcm_s16le")],
+        TargetFormat::Flac => {
+            let mut args = vec![s("-c:a"), s("flac"), s("-compression_level"), s("5")];
+            if target.ipod_safe {
+                args.extend([s("-sample_fmt"), s("s16")]);
+            }
+            args
+        }
+    }
+}
+
+/// Container flags. The muxer is named explicitly for every format: ffmpeg
+/// otherwise guesses from the output extension, which is exactly the coupling
+/// that lets a rename produce a mislabelled file.
+fn muxer_args(format: TargetFormat) -> Vec<String> {
+    let s = |v: &str| v.to_string();
+    match format {
+        // `ipod` is the MP4 variant the device expects; it rejects mp3 outright.
+        TargetFormat::Alac | TargetFormat::Aac => {
+            vec![s("-movflags"), s("+faststart"), s("-f"), s("ipod")]
+        }
+        // v2.3 rather than ffmpeg's v2.4 default — more readers handle it.
+        // -write_xing carries LAME's gapless delay/padding.
+        TargetFormat::Mp3 => vec![
+            s("-id3v2_version"),
+            s("3"),
+            s("-write_id3v1"),
+            s("1"),
+            s("-write_xing"),
+            s("1"),
+            s("-f"),
+            s("mp3"),
+        ],
+        // Without -write_id3v2 the aiff muxer exits 0 having silently dropped
+        // the cover art and every tag but the title. Fails open, not closed.
+        TargetFormat::Aiff => vec![
+            s("-write_id3v2"),
+            s("1"),
+            s("-id3v2_version"),
+            s("3"),
+            s("-f"),
+            s("aiff"),
+        ],
+        TargetFormat::Wav => vec![s("-f"), s("wav")],
+        TargetFormat::Flac => vec![s("-f"), s("flac")],
+    }
+}
+
+/// Runs one ffmpeg invocation, streaming both pipes.
+///
+/// Both pipes must be drained concurrently. With `-progress pipe:1` ffmpeg
+/// writes a status block roughly twice a second, so reading only stderr blocks
+/// the child the moment stdout's 64 KiB buffer fills — that is a certainty on
+/// any file longer than a few minutes, not a rare race.
+fn run_ffmpeg(
+    mut cmd: Command,
+    control: &ConvertControl,
+    obs: &dyn ConvertObserver,
+    index: usize,
+    name: &str,
+    duration_s: f64,
+) -> Result<(), String> {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let id = control.register(child);
+
+    // Kept so a failure message stays as informative as the old
+    // `.output()`-based one, which had the whole of stderr to hand.
+    let tail: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    std::thread::scope(|s| {
+        if let Some(err) = stderr {
+            s.spawn(|| {
+                for line in BufReader::new(err).lines().map_while(Result::ok) {
+                    let line = line.trim().to_string();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let level = if line.contains("Error")
+                        || line.contains("error")
+                        || line.contains("Invalid")
+                    {
+                        "error"
+                    } else {
+                        "warn"
+                    };
+                    obs.log(level, Some(name), &line);
+                    let mut t = tail.lock().unwrap();
+                    if t.len() == 20 {
+                        t.remove(0);
+                    }
+                    t.push(line);
+                }
+            });
+        }
+        if let Some(out) = stdout {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                // -progress emits `key=value` blocks; out_time_us is decode
+                // position, which is the only progress signal ffmpeg offers.
+                // It is NOT output bytes — a fact worth remembering when the
+                // bar moves unevenly across stream-copy and encode items.
+                if duration_s > 0.0 {
+                    if let Some(us) = line.strip_prefix("out_time_us=") {
+                        if let Ok(us) = us.trim().parse::<f64>() {
+                            let f = (us / 1_000_000.0 / duration_s).clamp(0.0, 1.0);
+                            obs.file_progress(index, f);
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // A cancel may have taken and killed the child already.
+    let status = match control.take(id) {
+        Some(mut child) => child.wait().map_err(|e| e.to_string())?,
+        None => return Err("cancelled".into()),
+    };
+    if status.success() {
+        Ok(())
+    } else {
+        let msg = tail.lock().unwrap().join(" | ");
+        Err(if msg.is_empty() {
+            format!("ffmpeg exited with {status}")
+        } else {
+            msg
+        })
+    }
+}
+
+/// Convert one file (or one cue slice) to `target` at `dst`.
+#[allow(clippy::too_many_arguments)]
 fn convert_one(
     tools: &Tools,
     probe: &MediaProbe,
@@ -729,38 +1134,54 @@ fn convert_one(
     dst: &Path,
     cue: Option<&CueMeta>,
     art_cache: &ArtCache,
+    target: &TargetSpec,
+    control: &ConvertControl,
+    obs: &dyn ConvertObserver,
+    index: usize,
 ) -> Result<(), String> {
     let trimming = cue.is_some();
     let out_rate = target_rate(probe.sample_rate);
+    let float_target = target.format.wants_float(encoders().aac_at);
+
+    // Whether the audio needs touching at all depends on the target. A lossy
+    // encoder does not care about source bit depth — only the rate ceiling
+    // and the channel count reach it.
+    let needs_work = if float_target {
+        target_rate(probe.sample_rate) != probe.sample_rate || probe.channels > 2 || probe.is_dsd()
+    } else {
+        probe.needs_work()
+    };
 
     let mut filters: Vec<String> = Vec::new();
-    let needs_work = probe.needs_work();
     if needs_work {
         // DSD carries a mountain of ultrasonic shaping noise; kill it before
         // decimating.
         if probe.is_dsd() {
             filters.push(format!("lowpass=f={}", out_rate * 45 / 100));
         }
-        let mut ares = format!(
-            "aresample={}:osr={}:osf=s16",
-            resampler_args(&tools.ffmpeg),
-            out_rate
-        );
-        // Dither only when losing resolution. Upconverting 8-bit needs none.
-        if probe.bits > 16 {
-            ares.push_str(":dither_method=triangular_hp");
+        let mut ares = format!("aresample={}:osr={}", resampler_args(&tools.ffmpeg), out_rate);
+        if !float_target {
+            ares.push_str(":osf=s16");
+            // Dither only when losing resolution. Upconverting 8-bit needs
+            // none, and a float encoder needs none at all.
+            if probe.bits > 16 {
+                ares.push_str(":dither_method=triangular_hp");
+            }
         }
         filters.push(ares);
     }
 
     // Already in spec and already ALAC — nothing to gain from re-encoding
     // (cue slices still re-encode: stream copy can't cut mid-frame cleanly).
-    let copy_codec = probe.codec == "alac" && !needs_work && !trimming;
+    let copy_codec =
+        target.format == TargetFormat::Alac && probe.codec == "alac" && !needs_work && !trimming;
 
     // Artwork: prefer what's embedded in the source; otherwise adopt the
     // folder cover. Oversized or non-JPEG art is re-encoded to a small JPEG
     // the iPod renders reliably; in-spec JPEG art is stream-copied untouched.
-    let art = if let Some(codec) = &probe.art_codec {
+    let art = if !target.format.can_embed_art() {
+        ArtPlan::None
+    } else if let Some(codec) = &probe.art_codec {
         ArtPlan::Embedded {
             norm: codec != "mjpeg" || probe.art_w > ART_MAX_EDGE || probe.art_h > ART_MAX_EDGE,
         }
@@ -792,11 +1213,35 @@ fn convert_one(
         ArtPlan::None
     };
 
-    let tmp = dst.with_extension("m4a.part");
+    let tmp = dst.with_extension(format!("{}.part", target.format.ext()));
+    let display = dst
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // A cue slice's span, not the whole album image — otherwise the per-file
+    // bar for track 1 of 12 would creep to 8% and stop.
+    let effective_duration = match cue {
+        Some(meta) => meta
+            .end
+            .map(|e| (e - meta.start).max(0.0))
+            .unwrap_or_else(|| (probe.duration_s - meta.start).max(0.0)),
+        None => probe.duration_s,
+    };
 
     let attempt = |art: &ArtPlan, force_norm: bool| -> Result<(), String> {
         let mut cmd = Command::new(&tools.ffmpeg);
-        cmd.args(["-hide_banner", "-nostdin", "-v", "error", "-y"]);
+        // -v warning rather than -v error: at error level there is essentially
+        // nothing to show, and the log pane exists to be read.
+        cmd.args([
+            "-hide_banner",
+            "-nostdin",
+            "-v",
+            "warning",
+            "-y",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+        ]);
         if let Some(meta) = cue {
             // Input-side seek: the FLAC seektable lands at the track start
             // instantly where an output filter had to decode everything
@@ -857,7 +1302,9 @@ fn convert_one(
         if copy_codec {
             cmd.args(["-c:a", "copy"]);
         } else {
-            cmd.args(["-c:a", "alac", "-sample_fmt", "s16p"]);
+            for arg in encoder_args(target) {
+                cmd.arg(arg);
+            }
             if probe.channels > 2 {
                 cmd.args(["-ac", "2"]);
             }
@@ -881,26 +1328,29 @@ fn convert_one(
                 cmd.args(["-metadata", &format!("album_artist={}", meta.album_artist)]);
             }
         }
-        cmd.args(["-movflags", "+faststart", "-f", "ipod"]);
+        for arg in muxer_args(target.format) {
+            cmd.arg(arg);
+        }
         cmd.arg(&tmp);
 
-        let out = cmd.output().map_err(|e| e.to_string())?;
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err(String::from_utf8_lossy(&out.stderr)
-                .trim()
-                .replace('\n', " | "))
-        }
+        // Stream-copy finishes effectively instantly and has no useful
+        // intra-file progress; passing 0 suppresses the per-file bar rather
+        // than parking it at zero.
+        let progress_span = if copy_codec { 0.0 } else { effective_duration };
+        run_ffmpeg(cmd, control, obs, index, &display, progress_span)
     };
 
     // Some sources hold artwork ffmpeg can decode but not stream-copy into
     // MP4. Retry re-encoding the picture, then as a last resort drop it.
+    //
+    // Every rung checks the cancel flag first: a SIGKILLed attempt looks
+    // exactly like a genuine failure from here, and without the check a
+    // cancelled file would fire two more ffmpeg runs on its way out.
     let mut result = attempt(&art, false);
-    if result.is_err() && !matches!(art, ArtPlan::None) {
+    if result.is_err() && !control.cancelled() && !matches!(art, ArtPlan::None) {
         let _ = std::fs::remove_file(&tmp);
         result = attempt(&art, true);
-        if result.is_err() {
+        if result.is_err() && !control.cancelled() {
             let _ = std::fs::remove_file(&tmp);
             result = attempt(&ArtPlan::None, false);
         }
@@ -919,57 +1369,184 @@ fn convert_one(
 }
 
 /// Classify one work item and convert it if needed. `out_dir` must exist.
-fn prepare_one(item: &WorkItem, out_dir: &Path, art_cache: &ArtCache) -> Prepared {
-    if item.cue.is_none() && is_direct_ext(&item.src) {
+///
+/// The passthrough shortcuts below exist because the import path's target is
+/// ALAC and a file already in that shape is best left untouched. They are all
+/// gated on the target actually being ALAC — a user who asked for MP3 must get
+/// MP3, not a silently forwarded original.
+#[allow(clippy::too_many_arguments)]
+fn prepare_one(
+    item: &WorkItem,
+    out_dir: &Path,
+    art_cache: &ArtCache,
+    target: &TargetSpec,
+    control: &ConvertControl,
+    obs: &dyn ConvertObserver,
+    index: usize,
+) -> Prepared {
+    let to_alac = target.format == TargetFormat::Alac;
+
+    if to_alac && item.cue.is_none() && is_direct_ext(&item.src) {
         return Prepared::Ready(item.src.clone());
     }
 
     let Some(tools) = tools() else {
         // Without ffprobe an .m4a can't be classified — import it directly,
         // exactly as the app behaved before conversion existed.
-        if item.cue.is_none() && lower_ext(&item.src) == "m4a" {
+        if to_alac && item.cue.is_none() && lower_ext(&item.src) == "m4a" {
             return Prepared::Ready(item.src.clone());
         }
         return Prepared::Rejected(FFMPEG_MISSING.into());
     };
 
-    let probe = match probe_media(&tools.ffprobe, &item.src) {
+    let probe = match item.probe.clone() {
+        // convert_add already probed this item; re-probing a several-thousand
+        // file queue costs a second full ffprobe pass for nothing.
         Some(p) if !p.codec.is_empty() => p,
-        _ => return Prepared::Rejected("unreadable audio file".into()),
+        _ => match probe_media(&tools.ffprobe, &item.src) {
+            Some(p) if !p.codec.is_empty() => p,
+            _ => return Prepared::Rejected("unreadable audio file".into()),
+        },
     };
 
-    if !probe.is_lossless() {
-        // AAC inside .m4a plays natively; other lossy codecs have nothing to
-        // gain from an ALAC re-encode and can't play on the iPod anyway.
-        if item.cue.is_none() && matches!(probe.codec.as_str(), "aac" | "mp3") {
-            return Prepared::Ready(item.src.clone());
-        }
-        return Prepared::Rejected(format!("lossy source ({})", probe.codec));
+    if let Some(reason) = reject_pairing(&probe, target) {
+        return Prepared::Rejected(reason);
     }
 
-    if item.cue.is_none() && lower_ext(&item.src) == "m4a" && !probe.needs_work() {
+    if to_alac && item.cue.is_none() && lower_ext(&item.src) == "m4a" && !probe.needs_work() {
         return Prepared::Ready(item.src.clone()); // already iPod-spec ALAC
     }
 
-    let dst = out_dir.join(&item.dst_name);
+    let dst = out_dir.join(format!("{}.{}", item.dst_stem, target.format.ext()));
     if let Some(parent) = dst.parent() {
         if std::fs::create_dir_all(parent).is_err() {
-            return Prepared::Rejected("couldn't create scratch directory".into());
+            return Prepared::Rejected("couldn't create output directory".into());
         }
     }
-    match convert_one(tools, &probe, &item.src, &dst, item.cue.as_ref(), art_cache) {
+    match convert_one(
+        tools,
+        &probe,
+        &item.src,
+        &dst,
+        item.cue.as_ref(),
+        art_cache,
+        target,
+        control,
+        obs,
+        index,
+    ) {
         Ok(()) => Prepared::Ready(dst),
+        Err(_) if control.cancelled() => Prepared::Cancelled,
         Err(e) => Prepared::Rejected(format!("conversion failed: {e}")),
     }
 }
 
-/// Convert a batch on a worker pool, reporting progress through `on_progress`
-/// (done-count high-water mark handled by the caller's counter semantics —
-/// calls arrive monotonically). Results come back in input order.
+/// Whether this source/target pair is worth doing at all. Refusal is a
+/// property of both, not of the source alone: transcoding a 320 kbps MP3 down
+/// to 128 kbps AAC to fit a full iPod is the single most legitimate reason
+/// anyone wants a converter, while the same MP3 to Apple Lossless only wastes
+/// space.
+pub fn reject_pairing(probe: &MediaProbe, target: &TargetSpec) -> Option<String> {
+    if probe.is_lossless() {
+        return None;
+    }
+    if target.format.is_lossless() {
+        return Some(format!(
+            "{} is already lossy — converting it to {} would only make it larger",
+            probe.codec.to_uppercase(),
+            target.format.label()
+        ));
+    }
+    // Lossy to lossy: only downward. Re-encoding at the same or a higher
+    // bitrate spends generation loss and gains nothing.
+    let target_bps = match target.rate {
+        Rate::Cbr(kbps) => kbps as u64 * 1000,
+        // A VBR index has no bitrate until it encodes; allow it and let the
+        // result speak. Index 0 is roughly 195-245 kbps depending on encoder.
+        Rate::Vbr(_) => 0,
+        Rate::Lossless => 0,
+    };
+    if target_bps > 0 && probe.bit_rate > 0 && target_bps >= probe.bit_rate {
+        return Some(format!(
+            "source is already {} kbps — re-encoding at {} kbps would lose quality for no saving",
+            probe.bit_rate / 1000,
+            target_bps / 1000
+        ));
+    }
+    None
+}
+
+/// Everything a caller can learn while a batch runs. The old callback fired
+/// only when an item finished, which left the bar frozen for the length of one
+/// ten-minute DSD file.
+pub trait ConvertObserver: Sync {
+    fn started(&self, _index: usize, _name: &str) {}
+    /// 0..1 within the current file. Never called for stream-copy items or
+    /// sources whose duration is unknown — there is no denominator.
+    fn file_progress(&self, _index: usize, _fraction: f64) {}
+    fn log(&self, _level: &'static str, _file: Option<&str>, _line: &str) {}
+    fn finished(&self, _done: usize, _name: &str) {}
+}
+
+/// Preserves the pre-converter behaviour: forward finish counts, drop the rest.
+pub struct ProgressOnly<'a>(pub &'a (dyn Fn(usize, &str) + Sync));
+
+impl ConvertObserver for ProgressOnly<'_> {
+    fn finished(&self, done: usize, name: &str) {
+        (self.0)(done, name);
+    }
+}
+
+/// Cancellation state shared with the running batch. Children are registered
+/// on spawn so a cancel can kill work already in flight rather than waiting
+/// for a ten-minute encode to finish on its own.
+#[derive(Default)]
+pub struct ConvertControl {
+    flag: std::sync::atomic::AtomicBool,
+    children: Mutex<Vec<(u32, std::process::Child)>>,
+}
+
+impl ConvertControl {
+    pub fn cancelled(&self) -> bool {
+        self.flag.load(Ordering::Relaxed)
+    }
+
+    /// Reset at the START of a run, never at the end: a cancel arriving in the
+    /// gap between two runs would otherwise leak forward and kill the next one.
+    pub fn arm(&self) {
+        self.flag.store(false, Ordering::Relaxed);
+        self.children.lock().unwrap().clear();
+    }
+
+    pub fn cancel(&self) {
+        self.flag.store(true, Ordering::Relaxed);
+        for (_, child) in self.children.lock().unwrap().iter_mut() {
+            let _ = child.kill();
+        }
+    }
+
+    fn register(&self, child: std::process::Child) -> u32 {
+        let id = child.id();
+        self.children.lock().unwrap().push((id, child));
+        id
+    }
+
+    /// Hands the child back so the caller can wait on it. None when a cancel
+    /// already took it and killed it.
+    fn take(&self, id: u32) -> Option<std::process::Child> {
+        let mut guard = self.children.lock().unwrap();
+        let pos = guard.iter().position(|(cid, _)| *cid == id)?;
+        Some(guard.remove(pos).1)
+    }
+}
+
+/// Convert a batch on a worker pool. Results come back in input order.
 pub fn prepare_batch(
     items: &[WorkItem],
     out_dir: &Path,
-    on_progress: &(dyn Fn(usize, &str) + Sync),
+    target: &TargetSpec,
+    control: &ConvertControl,
+    obs: &dyn ConvertObserver,
 ) -> Vec<Prepared> {
     if items.is_empty() {
         return Vec::new();
@@ -992,19 +1569,28 @@ pub fn prepare_batch(
     std::thread::scope(|s| {
         for _ in 0..workers {
             s.spawn(|| loop {
+                // Checked before claiming an index, so a cancel stops the
+                // queue advancing rather than merely killing what is running.
+                if control.cancelled() {
+                    break;
+                }
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 let Some(item) = items.get(i) else { break };
-                let prepared = prepare_one(item, out_dir, &art_cache);
+                let name = item.display();
+                obs.started(i, &name);
+                let prepared = prepare_one(item, out_dir, &art_cache, target, control, obs, i);
                 *results[i].lock().unwrap() = Some(prepared);
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                on_progress(n, &item.display());
+                obs.finished(n, &name);
             });
         }
     });
 
+    // Workers that broke out on the cancel flag never wrote a slot; those
+    // items were never attempted and must not be reported as failures.
     results
         .into_iter()
-        .map(|m| m.into_inner().unwrap().unwrap())
+        .map(|m| m.into_inner().unwrap().unwrap_or(Prepared::Cancelled))
         .collect()
 }
 
@@ -1113,6 +1699,154 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The failure this guards against is silent and severe: a partially
+    /// parameterised path writes MP3 or PCM bytes into a file still named
+    /// `.m4a`, libgpod copies it to the device with an `M4A ` marker, and the
+    /// track is unplayable with no error anywhere in the chain. Asserting the
+    /// command merely exited 0 would not catch it — the codec and the
+    /// extension both have to be checked.
+    #[test]
+    fn every_target_writes_its_own_codec_and_extension() {
+        let Some(tools) = tools() else {
+            eprintln!("skipping: ffmpeg not installed");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("podsync-fmt-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.flac");
+        assert!(Command::new(&tools.ffmpeg)
+            .args([
+                "-hide_banner", "-v", "error", "-y",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                "-c:a", "flac",
+            ])
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success());
+
+        let enc = encoders();
+        let cases: Vec<(TargetSpec, &str)> = vec![
+            (TargetSpec::alac(), "alac"),
+            (
+                TargetSpec {
+                    format: TargetFormat::Aac,
+                    rate: Rate::Cbr(256),
+                    ipod_safe: true,
+                },
+                "aac",
+            ),
+            (
+                TargetSpec {
+                    format: TargetFormat::Aiff,
+                    rate: Rate::Lossless,
+                    ipod_safe: true,
+                },
+                "pcm_s16be",
+            ),
+            (
+                TargetSpec {
+                    format: TargetFormat::Wav,
+                    rate: Rate::Lossless,
+                    ipod_safe: true,
+                },
+                "pcm_s16le",
+            ),
+            (
+                TargetSpec {
+                    format: TargetFormat::Flac,
+                    rate: Rate::Lossless,
+                    ipod_safe: true,
+                },
+                "flac",
+            ),
+        ];
+
+        for (target, want_codec) in cases {
+            let items = vec![WorkItem {
+                src: src.clone(),
+                dst_stem: format!("out-{}", target.format.ext()),
+                cue: None,
+                probe: None,
+            }];
+            let out = dir.join(format!("o-{:?}", target.format));
+            let results = prepare_batch(
+                &items,
+                &out,
+                &target,
+                &ConvertControl::default(),
+                &ProgressOnly(&|_, _| {}),
+            );
+            let path = match &results[0] {
+                Prepared::Ready(p) => p.clone(),
+                other => panic!(
+                    "{:?} did not convert: {}",
+                    target.format,
+                    match other {
+                        Prepared::Rejected(r) => r.clone(),
+                        _ => "cancelled".into(),
+                    }
+                ),
+            };
+            assert_eq!(
+                lower_ext(&path),
+                target.format.ext(),
+                "{:?} wrote the wrong extension",
+                target.format
+            );
+            let probe = probe_media(&tools.ffprobe, &path)
+                .unwrap_or_else(|| panic!("{:?} output does not probe", target.format));
+            assert_eq!(
+                probe.codec, want_codec,
+                "{:?} wrote {} inside a .{} — a mislabelled file",
+                target.format, probe.codec, target.format.ext()
+            );
+            assert!(probe.duration_s > 1.0, "{:?} lost the audio", target.format);
+        }
+
+        // MP3 needs lame, which a trimmed ffmpeg may lack; skip rather than
+        // fail a build that legitimately can't encode it.
+        if enc.lame {
+            let target = TargetSpec {
+                format: TargetFormat::Mp3,
+                rate: Rate::Cbr(192),
+                ipod_safe: true,
+            };
+            let items = vec![WorkItem {
+                src: src.clone(),
+                dst_stem: "out-mp3".into(),
+                cue: None,
+                probe: None,
+            }];
+            let out = dir.join("o-mp3");
+            let results = prepare_batch(
+                &items,
+                &out,
+                &target,
+                &ConvertControl::default(),
+                &ProgressOnly(&|_, _| {}),
+            );
+            let path = match &results[0] {
+                Prepared::Ready(p) => p.clone(),
+                _ => panic!("mp3 did not convert"),
+            };
+            assert_eq!(lower_ext(&path), "mp3");
+            assert_eq!(probe_media(&tools.ffprobe, &path).unwrap().codec, "mp3");
+        }
+
+        // -write_id3v2 fails OPEN: without it the aiff muxer still exits 0,
+        // having dropped every tag. Only the chunk itself proves it worked.
+        let aiff = dir.join("o-Aiff").join("out-aiff.aiff");
+        let bytes = std::fs::read(&aiff).expect("aiff output");
+        assert!(
+            bytes.windows(4).any(|w| w == b"ID3 "),
+            "AIFF carries no ID3 chunk — tags and cover art were silently dropped"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Full pipeline against a real ffmpeg: hi-res FLAC + folder cover +
     /// cue-split album image all come out as iPod-spec ALAC. Skips silently
     /// when ffmpeg isn't installed (CI without Homebrew).
@@ -1171,7 +1905,13 @@ mod tests {
         assert_eq!(items.len(), 3, "hires + 2 cue tracks");
 
         let out_dir = dir.join("out");
-        let results = prepare_batch(&items, &out_dir, &|_, _| {});
+        let results = prepare_batch(
+            &items,
+            &out_dir,
+            &TargetSpec::alac(),
+            &ConvertControl::default(),
+            &ProgressOnly(&|_, _| {}),
+        );
 
         let mut checked_hires = false;
         let mut cue_outputs = 0;
@@ -1229,7 +1969,13 @@ mod tests {
             &album2.join("song.flac"),
         );
         let items = scan(&[album2.display().to_string()]);
-        let results = prepare_batch(&items, &out_dir, &|_, _| {});
+        let results = prepare_batch(
+            &items,
+            &out_dir,
+            &TargetSpec::alac(),
+            &ConvertControl::default(),
+            &ProgressOnly(&|_, _| {}),
+        );
         let Prepared::Ready(path) = &results[0] else {
             panic!("in-spec flac with big jpeg cover was rejected");
         };
@@ -1253,10 +1999,17 @@ mod tests {
             &inspec,
         );
         let items = scan(&[inspec.display().to_string()]);
-        let results = prepare_batch(&items, &out_dir, &|_, _| {});
+        let results = prepare_batch(
+            &items,
+            &out_dir,
+            &TargetSpec::alac(),
+            &ConvertControl::default(),
+            &ProgressOnly(&|_, _| {}),
+        );
         match &results[0] {
             Prepared::Ready(p) => assert_eq!(p, &inspec, "no pointless re-encode"),
             Prepared::Rejected(r) => panic!("in-spec alac rejected: {r}"),
+            Prepared::Cancelled => panic!("nothing cancelled this batch"),
         }
 
         // Lossy-in-lossless-container is rejected, not converted.
@@ -1269,7 +2022,13 @@ mod tests {
             &lossy,
         );
         let items = scan(&[lossy.display().to_string()]);
-        let results = prepare_batch(&items, &out_dir, &|_, _| {});
+        let results = prepare_batch(
+            &items,
+            &out_dir,
+            &TargetSpec::alac(),
+            &ConvertControl::default(),
+            &ProgressOnly(&|_, _| {}),
+        );
         assert!(
             matches!(&results[0], Prepared::Rejected(r) if r.contains("lossy")),
             "adpcm wav must be rejected as lossy"
@@ -1304,7 +2063,7 @@ mod tests {
         assert_eq!(cue_items.len(), 2, "two cue tracks");
         assert_eq!(direct.len(), 1, "one loose mp3");
         assert!(direct[0].src.ends_with("loose.mp3"));
-        assert!(cue_items[0].dst_name.ends_with("/01 A.m4a"));
+        assert!(cue_items[0].dst_stem.ends_with("/01 A"));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

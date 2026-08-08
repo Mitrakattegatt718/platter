@@ -8,6 +8,7 @@
 //! long import could stall the entire IPC runtime.
 
 use crate::convert;
+use crate::convert_job;
 use crate::gpod::*;
 use crate::library::{LibrarySnapshot, SharedLibrary};
 use crate::tags::{self, PendingImport};
@@ -62,15 +63,8 @@ pub struct VolumeInfo {
 }
 
 fn volume_capacity(path: &std::path::Path) -> Option<(u64, u64)> {
-    let c_path = c_string(&path.to_string_lossy()).ok()?;
-    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    let rc = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
-    if rc != 0 {
-        return None;
-    }
-    let stat = unsafe { stat.assume_init() };
-    let block = stat.f_frsize as u64;
-    Some(((stat.f_bavail as u64) * block, (stat.f_blocks as u64) * block))
+    let info = crate::fsinfo::fs_info(path)?;
+    Some((info.free_bytes, info.total_bytes))
 }
 
 #[tauri::command]
@@ -261,8 +255,9 @@ fn prepare_sources(
         indices.push(i);
         work.push(convert::WorkItem {
             src,
-            dst_name: format!("{i}/{}.m4a", stem.replace(['/', ':'], "-")),
+            dst_stem: format!("{i}/{}", stem.replace(['/', ':'], "-")),
             cue: None,
+            probe: None,
         });
     }
     if work.is_empty() {
@@ -272,16 +267,22 @@ fn prepare_sources(
     let out_dir = convert::fresh_out_dir();
     let total = work.len();
     let emitted = AtomicUsize::new(0);
-    let results = convert::prepare_batch(&work, &out_dir, &|n, name| {
-        // High-water mark so parallel completions never move the bar back.
-        if emitted.fetch_max(n, Ordering::Relaxed) < n {
-            emit_progress(
-                app,
-                format!("Converting {n} of {total} — {name}"),
-                Some(n as f64 / total as f64),
-            );
-        }
-    });
+    let results = convert::prepare_batch(
+        &work,
+        &out_dir,
+        &convert::TargetSpec::alac(),
+        &convert::ConvertControl::default(),
+        &convert::ProgressOnly(&|n, name| {
+            // High-water mark so parallel completions never move the bar back.
+            if emitted.fetch_max(n, Ordering::Relaxed) < n {
+                emit_progress(
+                    app,
+                    format!("Converting {n} of {total} — {name}"),
+                    Some(n as f64 / total as f64),
+                );
+            }
+        }),
+    );
 
     for ((&index, item), prepared) in indices.iter().zip(&work).zip(results) {
         match prepared {
@@ -291,6 +292,12 @@ fn prepare_sources(
             convert::Prepared::Rejected(reason) => {
                 sources[index] = None;
                 failures.push((index, format!("{}: {reason}", item.display())));
+            }
+            // Unreachable on the import path — it passes a control that is
+            // never cancelled — but silence here would be a dropped file.
+            convert::Prepared::Cancelled => {
+                sources[index] = None;
+                failures.push((index, format!("{}: cancelled", item.display())));
             }
         }
     }
@@ -445,15 +452,21 @@ pub async fn import_files(
         let out_dir = convert::fresh_out_dir();
         let total = items.len();
         let emitted = AtomicUsize::new(0);
-        let results = convert::prepare_batch(&items, &out_dir, &|n, name| {
-            if emitted.fetch_max(n, Ordering::Relaxed) < n {
-                emit_progress(
-                    &app,
-                    format!("Converting {n} of {total} — {name}"),
-                    Some(n as f64 / total as f64),
-                );
-            }
-        });
+        let results = convert::prepare_batch(
+            &items,
+            &out_dir,
+            &convert::TargetSpec::alac(),
+            &convert::ConvertControl::default(),
+            &convert::ProgressOnly(&|n, name| {
+                if emitted.fetch_max(n, Ordering::Relaxed) < n {
+                    emit_progress(
+                        &app,
+                        format!("Converting {n} of {total} — {name}"),
+                        Some(n as f64 / total as f64),
+                    );
+                }
+            }),
+        );
 
         let mut ready: Vec<String> = Vec::new();
         let mut rejected: Vec<String> = Vec::new();
@@ -464,6 +477,9 @@ pub async fn import_files(
                 }
                 convert::Prepared::Rejected(reason) => {
                     rejected.push(format!("{}: {reason}", item.display()));
+                }
+                convert::Prepared::Cancelled => {
+                    rejected.push(format!("{}: cancelled", item.display()));
                 }
             }
         }
@@ -617,6 +633,404 @@ pub async fn remove_tracks(
         lib.art_cache_evict(&ids);
         lib.save()?;
         Ok(lib.snapshot())
+    })
+    .await
+}
+
+// ------------------------------------------------------------------- converter
+
+/// What this build can actually produce. Probed from ffmpeg's own buildconf,
+/// so a trimmed bundle greys out what it can't encode instead of failing at
+/// the end of a long job.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormatOption {
+    pub format: convert::TargetFormat,
+    pub label: String,
+    pub ext: String,
+    pub ipod_playable: bool,
+    pub lossless: bool,
+    /// None = usable; Some(reason) = greyed out with that reason shown.
+    pub unavailable: Option<String>,
+    pub encoder: String,
+}
+
+#[tauri::command]
+pub async fn convert_formats() -> Result<Vec<FormatOption>, String> {
+    blocking(|| {
+        use convert::TargetFormat::*;
+        let enc = convert::encoders();
+        let have_tools = convert::tools().is_some();
+        Ok([Alac, Aac, Mp3, Aiff, Wav, Flac]
+            .into_iter()
+            .map(|format| {
+                let encoder = match format {
+                    Alac => "alac",
+                    Aac if enc.aac_at => "aac_at",
+                    Aac => "aac",
+                    Mp3 => "libmp3lame",
+                    Aiff => "pcm_s16be",
+                    Wav => "pcm_s16le",
+                    Flac => "flac",
+                };
+                let unavailable = if !have_tools {
+                    Some("no ffmpeg available".to_string())
+                } else if format == Mp3 && !enc.lame {
+                    // ffmpeg ships no native MP3 encoder at all, so this is a
+                    // hard absence rather than a quality downgrade.
+                    Some("this build of ffmpeg has no MP3 encoder".to_string())
+                } else {
+                    None
+                };
+                FormatOption {
+                    format,
+                    label: format.label().to_string(),
+                    ext: format.ext().to_string(),
+                    ipod_playable: format.ipod_playable(),
+                    lossless: format.is_lossless(),
+                    unavailable,
+                    encoder: encoder.to_string(),
+                }
+            })
+            .collect())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn convert_add(
+    queue: State<'_, convert_job::SharedQueue>,
+    lib: State<'_, SharedLibrary>,
+    paths: Vec<String>,
+) -> Result<Vec<convert_job::SourceRow>, String> {
+    let queue = queue.inner().clone();
+    let lib = lib.inner().clone();
+    blocking(move || {
+        let tools = convert::tools().ok_or(convert::FFMPEG_MISSING)?;
+        let scanned = convert::scan(&paths);
+        // Read the mount before taking the queue lock; never hold both.
+        let mount = lib.lock().unwrap().mount_point().map(str::to_string);
+        let mut q = queue.lock().unwrap();
+        q.ipod_mount = mount;
+        q.extend(scanned, &tools.ffprobe);
+        Ok(q.rows(None))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn convert_remove(
+    queue: State<'_, convert_job::SharedQueue>,
+    ids: Vec<u64>,
+) -> Result<Vec<convert_job::SourceRow>, String> {
+    let queue = queue.inner().clone();
+    blocking(move || {
+        let mut q = queue.lock().unwrap();
+        q.remove(&ids);
+        Ok(q.rows(None))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn convert_clear(
+    queue: State<'_, convert_job::SharedQueue>,
+) -> Result<Vec<convert_job::SourceRow>, String> {
+    let queue = queue.inner().clone();
+    blocking(move || {
+        let mut q = queue.lock().unwrap();
+        q.clear();
+        Ok(q.rows(None))
+    })
+    .await
+}
+
+/// Pure arithmetic over the already-probed queue plus one statfs. No ffprobe,
+/// no ffmpeg — cheap enough to call on every settings change.
+#[tauri::command]
+pub async fn convert_estimate(
+    queue: State<'_, convert_job::SharedQueue>,
+    lib: State<'_, SharedLibrary>,
+    target: convert::TargetSpec,
+    destination: convert_job::Destination,
+) -> Result<ConvertEstimateResult, String> {
+    let queue = queue.inner().clone();
+    let lib = lib.inner().clone();
+    blocking(move || {
+        let mount = lib.lock().unwrap().mount_point().map(str::to_string);
+        let mut q = queue.lock().unwrap();
+        q.ipod_mount = mount;
+        Ok(ConvertEstimateResult {
+            estimate: convert_job::estimate(&q, &target, &destination)?,
+            rows: q.rows(Some(&target)),
+        })
+    })
+    .await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvertEstimateResult {
+    pub estimate: convert_job::Estimate,
+    /// Returned alongside so a format change re-marks blocked rows in one
+    /// round trip instead of two.
+    pub rows: Vec<convert_job::SourceRow>,
+}
+
+/// Sets the cancel flag and kills in-flight ffmpeg children.
+///
+/// Deliberately NOT async and deliberately never touching the library mutex:
+/// routed through `blocking()` it would queue behind the very job it is meant
+/// to stop, and the button would appear dead.
+#[tauri::command]
+pub fn cancel_convert(queue: State<'_, convert_job::SharedQueue>) -> Result<(), String> {
+    // Clone the Arc out and drop the lock before killing anything.
+    let control = queue.lock().unwrap().control.clone();
+    control.cancel();
+    Ok(())
+}
+
+/// Emits `convert:progress` and `convert:log` for a running job.
+///
+/// Log lines are batched: with `-progress pipe:1` and up to eight workers, one
+/// emit per line floods the IPC channel and freezes the webview.
+struct JobEvents {
+    app: AppHandle,
+    job_id: u64,
+    total: usize,
+    seq: AtomicUsize,
+    done: AtomicUsize,
+    /// Display name of the most recently started file.
+    current: std::sync::Mutex<String>,
+    pending: std::sync::Mutex<Vec<serde_json::Value>>,
+    last_flush: std::sync::Mutex<std::time::Instant>,
+}
+
+impl JobEvents {
+    fn new(app: AppHandle, job_id: u64, total: usize) -> Self {
+        Self {
+            app,
+            job_id,
+            total,
+            seq: AtomicUsize::new(0),
+            done: AtomicUsize::new(0),
+            current: std::sync::Mutex::new(String::new()),
+            pending: std::sync::Mutex::new(Vec::new()),
+            last_flush: std::sync::Mutex::new(std::time::Instant::now()),
+        }
+    }
+
+    fn emit_progress(&self, phase: &str, file_fraction: Option<f64>) {
+        let done = self.done.load(Ordering::Relaxed);
+        let _ = self.app.emit(
+            "convert:progress",
+            serde_json::json!({
+                "jobId": self.job_id,
+                "phase": phase,
+                "done": done,
+                "total": self.total,
+                "fraction": if self.total > 0 { Some(done as f64 / self.total as f64) } else { None },
+                "current": self.current.lock().unwrap().clone(),
+                "fileFraction": file_fraction,
+            }),
+        );
+    }
+
+    fn push_line(&self, level: &'static str, file: Option<&str>, line: &str) {
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+        self.pending.lock().unwrap().push(serde_json::json!({
+            "seq": seq,
+            "level": level,
+            "file": file,
+            "line": line,
+        }));
+        self.maybe_flush(false);
+    }
+
+    fn maybe_flush(&self, force: bool) {
+        let mut last = self.last_flush.lock().unwrap();
+        if !force && last.elapsed() < std::time::Duration::from_millis(120) {
+            return;
+        }
+        let lines: Vec<_> = std::mem::take(&mut *self.pending.lock().unwrap());
+        *last = std::time::Instant::now();
+        drop(last);
+        if lines.is_empty() {
+            return;
+        }
+        let _ = self.app.emit(
+            "convert:log",
+            serde_json::json!({ "jobId": self.job_id, "lines": lines }),
+        );
+    }
+}
+
+impl convert::ConvertObserver for JobEvents {
+    fn started(&self, _index: usize, name: &str) {
+        *self.current.lock().unwrap() = name.to_string();
+        self.emit_progress("converting", Some(0.0));
+    }
+
+    fn file_progress(&self, _index: usize, fraction: f64) {
+        self.emit_progress("converting", Some(fraction));
+    }
+
+    fn log(&self, level: &'static str, file: Option<&str>, line: &str) {
+        self.push_line(level, file, line);
+    }
+
+    fn finished(&self, done: usize, _name: &str) {
+        // High-water mark: up to eight workers finish out of order and the
+        // bar must never move backwards.
+        self.done.fetch_max(done, Ordering::Relaxed);
+        self.emit_progress("converting", None);
+        self.maybe_flush(true);
+    }
+}
+
+/// Runs the whole job. The heavy work happens with no library lock held; the
+/// mutex is taken only for the final import when the destination is the iPod.
+#[tauri::command]
+pub async fn convert_start(
+    app: AppHandle,
+    lib: State<'_, SharedLibrary>,
+    queue: State<'_, convert_job::SharedQueue>,
+    target: convert::TargetSpec,
+    destination: convert_job::Destination,
+) -> Result<convert_job::JobSummary, String> {
+    let lib = lib.inner().clone();
+    let queue = queue.inner().clone();
+    blocking(move || {
+        target.validate()?;
+        if convert::tools().is_none() {
+            return Err(convert::FFMPEG_MISSING.into());
+        }
+
+        // Everything the run needs, lifted out under one short lock.
+        let (work, control, job_id) = {
+            let mut q = queue.lock().unwrap();
+            if q.is_empty() {
+                return Err("Nothing to convert — add some files first.".into());
+            }
+            let control = q.control.clone();
+            // Armed at the start, never cleared at the end: a cancel arriving
+            // between runs must not leak forward into the next one.
+            control.arm();
+            let job_id = convert_job::next_job_id(&q);
+            (convert_job::take_work(&mut q), control, job_id)
+        };
+
+        let to_ipod = matches!(destination, convert_job::Destination::Ipod);
+        let out_dir = match &destination {
+            convert_job::Destination::Folder { path } => convert_job::folder_out_dir(path),
+            convert_job::Destination::Ipod => convert::fresh_out_dir(),
+        };
+
+        let events = JobEvents::new(app.clone(), job_id, work.len());
+        events.push_line(
+            "cmd",
+            None,
+            &format!(
+                "Converting {} file(s) to {} ({})",
+                work.len(),
+                target.format.label(),
+                out_dir.display()
+            ),
+        );
+
+        let prepared = convert::prepare_batch(&work, &out_dir, &target, &control, &events);
+        events.maybe_flush(true);
+
+        let cancelled = control.cancelled();
+        let mut converted = 0usize;
+        let mut failures = Vec::new();
+        let mut ready: Vec<String> = Vec::new();
+        for (item, outcome) in work.iter().zip(&prepared) {
+            match outcome {
+                convert::Prepared::Ready(path) => {
+                    converted += 1;
+                    ready.push(path.to_string_lossy().into_owned());
+                }
+                convert::Prepared::Rejected(reason) => {
+                    failures.push(format!("{}: {reason}", item.display()));
+                }
+                convert::Prepared::Cancelled => {}
+            }
+        }
+        let output_bytes = convert_job::output_bytes(&prepared);
+
+        // Debris from any ffmpeg the cancel killed mid-write. Runs for a
+        // cancelled job too — a user's own folder must not accumulate .part.
+        convert_job::sweep_parts(&out_dir);
+
+        let mut summary = convert_job::JobSummary {
+            job_id,
+            converted,
+            failed: failures.len(),
+            cancelled,
+            output_bytes,
+            output_dir: Some(out_dir.to_string_lossy().into_owned()),
+            failures,
+        };
+
+        if to_ipod && !cancelled && !ready.is_empty() {
+            // Past this point cancelling cannot help: libgpod's copy plus a
+            // full database rewrite is not resumable.
+            queue
+                .lock()
+                .unwrap()
+                .finishing
+                .store(true, Ordering::Relaxed);
+            events.push_line("info", None, "Importing into the iPod library…");
+            events.maybe_flush(true);
+            let _ = app.emit(
+                "convert:progress",
+                serde_json::json!({
+                    "jobId": job_id, "phase": "importing",
+                    "done": summary.converted, "total": summary.converted,
+                    "fraction": 1.0, "current": "", "fileFraction": null,
+                }),
+            );
+
+            let staged = read_tags_blocking(&app, ready);
+            let result = import_tracks_blocking(&app, &lib, staged);
+            queue
+                .lock()
+                .unwrap()
+                .finishing
+                .store(false, Ordering::Relaxed);
+            // The scratch dir only exists on this path; the folder
+            // destination wrote in place and must never be deleted.
+            let _ = std::fs::remove_dir_all(&out_dir);
+            summary.output_dir = None;
+            match result {
+                Ok(r) => {
+                    summary.converted = r.imported;
+                    summary.failures.extend(r.failures);
+                    summary.failed = summary.failures.len();
+                }
+                Err(e) => {
+                    summary.failures.push(e);
+                    summary.failed = summary.failures.len();
+                }
+            }
+        }
+
+        events.push_line(
+            if summary.failed > 0 { "warn" } else { "info" },
+            None,
+            &if cancelled {
+                "Cancelled.".to_string()
+            } else {
+                format!(
+                    "Done — {} converted, {} failed.",
+                    summary.converted, summary.failed
+                )
+            },
+        );
+        events.maybe_flush(true);
+        let _ = app.emit("convert:done", &summary);
+        Ok(summary)
     })
     .await
 }

@@ -203,10 +203,17 @@ GpodTrackRef gpod_import_track(GpodDBRef dbRef,
         track->samplerate = (guint16)spec->samplerate;
     }
 
-    // Determine filetype from extension for the mediatype flag.
+    // This string is load-bearing, not decoration: itdb_track_set_defaults()
+    // string-matches it to pick the unk126/unk144 pair the device expects.
+    // Falling through to "MP3 audio file" for a WAV or AIFF writes MP3's
+    // values into the iTunesDB — a knowingly wrong record.
     const char* ext = strrchr(sourceFilePath, '.');
     if (ext && (strcasecmp(ext, ".m4a") == 0 || strcasecmp(ext, ".aac") == 0)) {
         track->filetype = g_strdup("AAC audio file");
+    } else if (ext && strcasecmp(ext, ".wav") == 0) {
+        track->filetype = g_strdup("WAV audio file");
+    } else if (ext && (strcasecmp(ext, ".aiff") == 0 || strcasecmp(ext, ".aif") == 0)) {
+        track->filetype = g_strdup("AIFF audio file");
     } else {
         track->filetype = g_strdup("MP3 audio file");
     }

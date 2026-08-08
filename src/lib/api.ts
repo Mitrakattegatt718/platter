@@ -1,8 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  ConvertEstimateResult,
+  Destination,
+  FormatOption,
   ImportResult,
+  JobSummary,
   LibrarySnapshot,
   PendingImport,
+  SourceRow,
+  TargetSpec,
   TrackFields,
   VolumeInfo,
 } from "./types";
@@ -36,6 +42,16 @@ export const api = {
     invoke<LibrarySnapshot>("remove_tracks", { ids }),
   getArtwork: (id: string, size: number) =>
     invoke<string | null>("get_artwork", { id, size }),
+
+  convertFormats: () => invoke<FormatOption[]>("convert_formats"),
+  convertAdd: (paths: string[]) => invoke<SourceRow[]>("convert_add", { paths }),
+  convertRemove: (ids: number[]) => invoke<SourceRow[]>("convert_remove", { ids }),
+  convertClear: () => invoke<SourceRow[]>("convert_clear"),
+  convertEstimate: (target: TargetSpec, destination: Destination) =>
+    invoke<ConvertEstimateResult>("convert_estimate", { target, destination }),
+  convertStart: (target: TargetSpec, destination: Destination) =>
+    invoke<JobSummary>("convert_start", { target, destination }),
+  cancelConvert: () => invoke<void>("cancel_convert"),
 };
 
 /** Artwork thumbnails keyed by track id + size. Two layers: a Promise map so
