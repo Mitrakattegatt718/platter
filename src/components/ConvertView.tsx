@@ -243,39 +243,28 @@ export function ConvertView({
                   key={f.format}
                   option={f}
                   selected={f.format === format}
+                  kbps={
+                    f.format === format
+                      ? rateKbps(rate)
+                      : rateKbps(defaultRate(f.format))
+                  }
                   onSelect={() => {
                     setFormat(f.format);
                     setRate(defaultRate(f.format));
                   }}
+                  onKbps={(k) => {
+                    setFormat(f.format);
+                    setRate({ cbr: k });
+                  }}
                 />
               ))}
             </div>
-          </Section>
-
-          {chosen && !chosen.lossless && (
-            <Section label="Bitrate">
-              <div className="flex flex-wrap gap-1">
-                {CBR_CHOICES.map((kbps) => (
-                  <button
-                    key={kbps}
-                    type="button"
-                    onClick={() => setRate({ cbr: kbps })}
-                    className={cn(
-                      "rounded-md border px-2 py-1 text-xs tabular-nums transition-colors",
-                      rateKbps(rate) === kbps
-                        ? "border-primary bg-primary/10 text-foreground"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    {kbps}
-                  </button>
-                ))}
-              </div>
-              <p className="mt-1.5 text-[11px] text-muted-foreground">
+            {chosen && !chosen.lossless && (
+              <p className="text-[11px] text-muted-foreground">
                 Encoded with {chosen.encoder}.
               </p>
-            </Section>
-          )}
+            )}
+          </Section>
 
           <Section label="Save to">
             <div className="flex flex-col gap-1">
@@ -335,21 +324,37 @@ function Section({ label, children }: { label: string; children: React.ReactNode
 function FormatTile({
   option,
   selected,
+  kbps,
   onSelect,
+  onKbps,
 }: {
   option: FormatOption;
   selected: boolean;
+  /** CBR to show in the tile's select; null for lossless formats. */
+  kbps: number | null;
   onSelect: () => void;
+  onKbps: (kbps: number) => void;
 }) {
   const disabled = option.unavailable !== null;
+  // A <select> cannot sit inside a <button>, so the tile is a clickable div
+  // with the button role and the select stops clicks from bubbling into it.
   return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onSelect}
+    <div
+      role="button"
+      tabIndex={disabled ? -1 : 0}
+      aria-disabled={disabled}
+      aria-pressed={selected}
+      onClick={disabled ? undefined : onSelect}
+      onKeyDown={(e) => {
+        if (disabled) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
       title={option.unavailable ?? undefined}
       className={cn(
-        "flex flex-col items-start gap-0.5 rounded-md border px-2.5 py-2 text-left text-xs transition-colors",
+        "flex cursor-pointer flex-col items-start gap-0.5 rounded-md border px-2.5 py-2 text-left text-xs transition-colors",
         selected
           ? "border-primary bg-primary/10"
           : "border-border/60 hover:bg-muted/60",
@@ -362,8 +367,22 @@ function FormatTile({
         {!option.ipodPlayable && (
           <span className="rounded bg-muted px-1 py-px text-[9px]">Mac only</span>
         )}
+        {kbps !== null && !disabled && (
+          <select
+            value={kbps}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => onKbps(Number(e.target.value))}
+            className="rounded border-none bg-muted px-1 py-px text-[10px] tabular-nums text-muted-foreground outline-none"
+          >
+            {CBR_CHOICES.map((k) => (
+              <option key={k} value={k}>
+                {k} kbps
+              </option>
+            ))}
+          </select>
+        )}
       </span>
-    </button>
+    </div>
   );
 }
 
