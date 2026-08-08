@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 const LABELS: Record<AppView, string> = {
   library: "Library",
   convert: "Convert",
+  stats: "Stats",
 };
 
 /** The macOS segmented-control idiom, not a web nav bar: one recessed track,

@@ -220,7 +220,7 @@ export interface ConvertLogBatch {
   lines: ConvertLogLine[];
 }
 
-export type AppView = "library" | "convert";
+export type AppView = "library" | "convert" | "stats";
 
 export type TrackGrouping = "none" | "artist" | "album" | "genre";
 export type TrackSort = "title" | "artist" | "albumOrder" | "recentlyAdded";

@@ -36,6 +36,7 @@ import { DisconnectedView } from "@/components/DisconnectedView";
 import { MountPickerDialog } from "@/components/MountPickerDialog";
 import { ProgressBanner } from "@/components/ProgressBanner";
 import { ConvertView } from "@/components/ConvertView";
+import { StatsView } from "@/components/StatsView";
 import { ViewTabs } from "@/components/ViewTabs";
 import { TrackEditPanel } from "@/components/TrackEditPanel";
 import { TrackList } from "@/components/TrackList";
@@ -101,9 +102,13 @@ export default function App() {
   const [showMountPicker, setShowMountPicker] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
   const [detailWidth, setDetailWidth] = useState(440);
-  const [view, setView] = useState<AppView>(
-    () => (localStorage.getItem("appView") as AppView) || "library",
-  );
+  const [view, setView] = useState<AppView>(() => {
+    const stored = localStorage.getItem("appView");
+    // A stale value from an older build must not blank the window.
+    return stored === "library" || stored === "convert" || stored === "stats"
+      ? stored
+      : "library";
+  });
   /** Fraction of the running conversion, surfaced on the header tab so the
    * job stays visible from the Library tab. Null when nothing is running. */
   const [convertProgress, setConvertProgress] = useState<number | null>(null);
@@ -127,7 +132,7 @@ export default function App() {
     localStorage.setItem("appView", view);
   }, [view]);
 
-  // ⌘1 / ⌘2 switch tabs, the way a native app's View menu would.
+  // ⌘1 / ⌘2 / ⌘3 switch tabs, the way a native app's View menu would.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.altKey || e.ctrlKey) return;
@@ -137,6 +142,9 @@ export default function App() {
       } else if (e.key === "2") {
         e.preventDefault();
         setView("convert");
+      } else if (e.key === "3") {
+        e.preventDefault();
+        setView("stats");
       }
     };
     window.addEventListener("keydown", onKey);
@@ -639,6 +647,10 @@ export default function App() {
             onLibraryChanged={reloadLibrary}
             onProgressChange={setConvertProgress}
           />
+        </div>
+
+        <div className={`min-h-0 flex-1 ${view === "stats" ? "" : "hidden"}`}>
+          <StatsView tracks={snapshot.tracks} mountPoint={snapshot.mountPoint} />
         </div>
 
         <ProgressBanner busy={busy} progress={progress} />
