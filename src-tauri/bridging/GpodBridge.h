@@ -162,9 +162,14 @@ int gpod_set_track_artwork(GpodDBRef db, GpodTrackRef track, const char* imagePa
 /// off the device on next gpod_write).
 int gpod_remove_track(GpodDBRef db, GpodTrackRef track);
 
-/// Extract a track's cover-art thumbnail to a temp PNG file and return
-/// its path (caller must free). Returns NULL if the track has no artwork.
-char* _Nullable gpod_get_track_artwork_png(GpodTrackRef track, int size);
+/// Extract a track's cover-art thumbnail as PNG bytes in a malloc'd buffer
+/// (caller frees with free()), its length written to outLen. Returns NULL if
+/// the track has no artwork. Byte returns keep this off the filesystem — the
+/// old temp-file variant wrote every (track,size) to one deterministic path,
+/// which forced callers to hold the library lock through the read-back.
+unsigned char* _Nullable gpod_get_track_artwork_png_bytes(GpodTrackRef track,
+                                                          int size,
+                                                          int* outLen);
 
 /// Layout probe for the hand-written Rust mirrors of the three structs above.
 /// Nothing checks those mirrors at compile time — a field added on one side

@@ -122,7 +122,12 @@ extern "C" {
         image_path: *const c_char,
     ) -> c_int;
     pub fn gpod_remove_track(db: GpodDbRef, track: GpodTrackRef) -> c_int;
-    pub fn gpod_get_track_artwork_png(track: GpodTrackRef, size: c_int) -> *mut c_char;
+    /// Artwork as malloc'd PNG bytes; caller frees with libc::free.
+    pub fn gpod_get_track_artwork_png_bytes(
+        track: GpodTrackRef,
+        size: c_int,
+        out_len: *mut c_int,
+    ) -> *mut u8;
     pub fn gpod_abi_size(which: c_int) -> std::os::raw::c_ulong;
     pub fn gpod_abi_last_offset(which: c_int) -> std::os::raw::c_ulong;
 }

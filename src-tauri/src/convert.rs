@@ -896,12 +896,23 @@ fn folder_cover(dir: &Path) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
-/// Per-run cache of normalized folder covers: cue splits would otherwise
-/// decode and rescale the same multi-hundred-MB scan for every track of the
-/// album. Keyed by cover path; None caches a failed normalization.
+/// A directory's chosen cover and whether it needs normalization — the two
+/// things convert_one otherwise worked out per track with a read_dir plus an
+/// ffprobe spawn on the same cover.jpg, multiplied by every track of an album.
+#[derive(Clone)]
+struct CoverPick {
+    path: PathBuf,
+    norm: bool,
+}
+
+/// Per-run cache of folder-cover decisions and normalized covers: cue splits
+/// would otherwise decode and rescale the same multi-hundred-MB scan for
+/// every track of the album. Keyed by cover path (normalization) and source
+/// directory (picking); None caches a miss/failed normalization.
 pub struct ArtCache {
     dir: PathBuf,
     entries: Mutex<HashMap<PathBuf, Option<PathBuf>>>,
+    picks: Mutex<HashMap<PathBuf, Option<CoverPick>>>,
     counter: AtomicUsize,
 }
 
@@ -910,8 +921,33 @@ impl ArtCache {
         ArtCache {
             dir: dir.join("artcache"),
             entries: Mutex::new(HashMap::new()),
+            picks: Mutex::new(HashMap::new()),
             counter: AtomicUsize::new(0),
         }
+    }
+
+    /// The folder cover for tracks living in `dir`, resolved once per batch.
+    fn cover_in(&self, ffprobe: &Path, dir: &Path) -> Option<CoverPick> {
+        if let Some(hit) = self.picks.lock().unwrap().get(dir) {
+            return hit.clone();
+        }
+        let pick = folder_cover(dir).map(|cover| {
+            let ext_norm = !matches!(lower_ext(&cover).as_str(), "jpg" | "jpeg");
+            let size_norm = probe_media(ffprobe, &cover)
+                .map(|p| p.art_w > ART_MAX_EDGE || p.art_h > ART_MAX_EDGE)
+                .unwrap_or(false);
+            CoverPick {
+                path: cover,
+                norm: ext_norm || size_norm,
+            }
+        });
+        // Concurrent workers may race to fill the same album — both answers
+        // are identical, last insert wins.
+        self.picks
+            .lock()
+            .unwrap()
+            .insert(dir.to_path_buf(), pick.clone());
+        pick
     }
 
     fn normalized(&self, ffmpeg: &Path, src: &Path) -> Option<PathBuf> {
@@ -1185,27 +1221,26 @@ fn convert_one(
         ArtPlan::Embedded {
             norm: codec != "mjpeg" || probe.art_w > ART_MAX_EDGE || probe.art_h > ART_MAX_EDGE,
         }
-    } else if let Some(cover) = src.parent().and_then(folder_cover) {
-        let ext_norm = !matches!(lower_ext(&cover).as_str(), "jpg" | "jpeg");
-        let size_norm = probe_media(&tools.ffprobe, &cover)
-            .map(|p| p.art_w > ART_MAX_EDGE || p.art_h > ART_MAX_EDGE)
-            .unwrap_or(false);
-        if ext_norm || size_norm {
+    } else if let Some(pick) = src
+        .parent()
+        .and_then(|dir| art_cache.cover_in(&tools.ffprobe, dir))
+    {
+        if pick.norm {
             // Normalize once per album through the cache; on failure fall
             // back to letting ffmpeg re-encode it inline for every track.
-            match art_cache.normalized(&tools.ffmpeg, &cover) {
+            match art_cache.normalized(&tools.ffmpeg, &pick.path) {
                 Some(cached) => ArtPlan::File {
                     path: cached,
                     norm: false,
                 },
                 None => ArtPlan::File {
-                    path: cover,
+                    path: pick.path,
                     norm: true,
                 },
             }
         } else {
             ArtPlan::File {
-                path: cover,
+                path: pick.path,
                 norm: false,
             }
         }

@@ -342,26 +342,36 @@ int gpod_remove_track(GpodDBRef dbRef, GpodTrackRef trackRef) {
     return 1;
 }
 
-char* gpod_get_track_artwork_png(GpodTrackRef trackRef, int size) {
+unsigned char* gpod_get_track_artwork_png_bytes(GpodTrackRef trackRef,
+                                                int size,
+                                                int* outLen) {
     Itdb_Track* track = (Itdb_Track*)trackRef;
-    if (!track) return NULL;
+    if (!track || !outLen) return NULL;
 
     GdkPixbuf* pixbuf = (GdkPixbuf*)itdb_track_get_thumbnail(track, size, size);
     if (!pixbuf) return NULL;
 
-    const char* tmpdir = g_get_tmp_dir();
-    char filename[512];
-    snprintf(filename, sizeof(filename), "%s/podsync_art_%u_%d.png",
-             tmpdir, (unsigned)track->dbid, size);
-
+    gchar* encoded = NULL;
+    gsize encodedLen = 0;
     GError* error = NULL;
-    if (!gdk_pixbuf_save(pixbuf, filename, "png", &error, NULL)) {
-        fprintf(stderr, "[podsync] artwork save failed: %s\n",
+    if (!gdk_pixbuf_save_to_buffer(pixbuf, &encoded, &encodedLen, "png", &error, NULL)) {
+        fprintf(stderr, "[podsync] artwork encode failed: %s\n",
                 error ? error->message : "unknown");
         if (error) g_error_free(error);
         g_object_unref(pixbuf);
         return NULL;
     }
     g_object_unref(pixbuf);
-    return strdup(filename);
+
+    // gdk_pixbuf_save_to_buffer returns g_malloc'd memory; g_free isn't
+    // guaranteed to be free(), so hand the caller a plain malloc copy.
+    unsigned char* bytes = malloc(encodedLen);
+    if (!bytes) {
+        g_free(encoded);
+        return NULL;
+    }
+    memcpy(bytes, encoded, encodedLen);
+    g_free(encoded);
+    *outLen = (int)encodedLen;
+    return bytes;
 }

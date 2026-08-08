@@ -314,7 +314,22 @@ export default function App() {
     [orderedIds, selection, trackById],
   );
 
-  const selectionKey = useMemo(() => [...selection].sort().join(","), [selection]);
+  /** Remount identity for the bulk editor. FNV-1a per id, folded with XOR so
+   * the key — like the sorted join it replaces — is identical for the same
+   * set regardless of click order, without sorting and concatenating several
+   * thousand id strings on every ⌘-click. */
+  const selectionKey = useMemo(() => {
+    let h = 0;
+    for (const id of selection) {
+      let idh = 0x811c9dc5;
+      for (let i = 0; i < id.length; i++) {
+        idh ^= id.charCodeAt(i);
+        idh = Math.imul(idh, 0x01000193);
+      }
+      h ^= idh;
+    }
+    return `${selection.size}:${(h >>> 0).toString(36)}`;
+  }, [selection]);
 
   const handleRowClick = useCallback(
     (trackId: string, event: React.MouseEvent) => {

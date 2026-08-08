@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -203,6 +204,15 @@ export function ConvertView({
     }
   }
 
+  // Stable identities: SourceList rows are memoized, and these callbacks are
+  // their only props besides the row — an inline lambda would defeat it.
+  const removeRow = useCallback(async (id: number) => {
+    setRows(await api.convertRemove([id]));
+  }, []);
+  const clearRows = useCallback(async () => {
+    setRows(await api.convertClear());
+  }, []);
+
   const chosen = formats.find((f) => f.format === format);
   const blockedAll = rows.length > 0 && rows.every((r) => r.blocked !== null);
   const wontPlay = destKind === "ipod" && chosen && !chosen.ipodPlayable;
@@ -231,8 +241,8 @@ export function ConvertView({
           adding={adding}
           onAddFiles={addFiles}
           onAddFolder={addFolder}
-          onRemove={async (id) => setRows(await api.convertRemove([id]))}
-          onClear={async () => setRows(await api.convertClear())}
+          onRemove={removeRow}
+          onClear={clearRows}
         />
 
         <div className="flex w-80 shrink-0 flex-col gap-5 overflow-y-auto border-l p-5">
@@ -489,48 +499,92 @@ function SourceList({
           </p>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto">
-          {rows.map((row) => (
-            <div
-              key={row.id}
-              className={cn(
-                "grid grid-cols-[minmax(0,1fr)_90px_90px_70px_24px] items-center gap-2 border-b px-3 py-1.5 text-xs",
-                row.blocked && "opacity-60",
-              )}
-            >
-              <div className="flex min-w-0 flex-col">
-                <span className="truncate" title={row.srcPath}>
-                  {row.display}
-                </span>
-                {row.blocked && (
-                  <span className="flex items-center gap-1 truncate text-[10px] text-amber-600 dark:text-amber-500">
-                    <AlertTriangle className="size-2.5 shrink-0" />
-                    {row.blocked}
-                  </span>
-                )}
-              </div>
-              <span className="truncate text-muted-foreground">{row.codec}</span>
-              <span className="tabular-nums text-muted-foreground">
-                {row.sampleRate > 0 ? `${(row.sampleRate / 1000).toFixed(1)} kHz` : "—"}
-              </span>
-              <span className="text-right tabular-nums text-muted-foreground">
-                {row.durationS > 0 ? formatDuration(row.durationS * 1000) : "—"}
-              </span>
-              <button
-                type="button"
-                onClick={() => onRemove(row.id)}
-                className="text-muted-foreground hover:text-foreground"
-                aria-label={`Remove ${row.display}`}
-              >
-                <X className="size-3.5" />
-              </button>
-            </div>
-          ))}
-        </div>
+        <SourcesVirtualized rows={rows} onRemove={onRemove} />
       )}
     </div>
   );
 }
+
+/** The staged-files list must survive queues of several thousand rows, and
+ * the parent re-renders on every progress tick while a job runs — so rows
+ * are virtualized and memoized rather than rendered in full each time. */
+function SourcesVirtualized({
+  rows,
+  onRemove,
+}: {
+  rows: SourceRow[];
+  onRemove: (id: number) => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (index) => (rows[index].blocked ? 47 : 32),
+    getItemKey: (index) => rows[index].id,
+    overscan: 10,
+  });
+  return (
+    <div ref={scrollRef} className="flex-1 overflow-y-auto">
+      <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
+        {virtualizer.getVirtualItems().map((item) => (
+          <div
+            key={item.key}
+            data-index={item.index}
+            ref={virtualizer.measureElement}
+            className="absolute top-0 left-0 w-full"
+            style={{ transform: `translateY(${item.start}px)` }}
+          >
+            <SourceRowView row={rows[item.index]} onRemove={onRemove} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const SourceRowView = memo(function SourceRowView({
+  row,
+  onRemove,
+}: {
+  row: SourceRow;
+  onRemove: (id: number) => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "grid grid-cols-[minmax(0,1fr)_90px_90px_70px_24px] items-center gap-2 border-b px-3 py-1.5 text-xs",
+        row.blocked && "opacity-60",
+      )}
+    >
+      <div className="flex min-w-0 flex-col">
+        <span className="truncate" title={row.srcPath}>
+          {row.display}
+        </span>
+        {row.blocked && (
+          <span className="flex items-center gap-1 truncate text-[10px] text-amber-600 dark:text-amber-500">
+            <AlertTriangle className="size-2.5 shrink-0" />
+            {row.blocked}
+          </span>
+        )}
+      </div>
+      <span className="truncate text-muted-foreground">{row.codec}</span>
+      <span className="tabular-nums text-muted-foreground">
+        {row.sampleRate > 0 ? `${(row.sampleRate / 1000).toFixed(1)} kHz` : "—"}
+      </span>
+      <span className="text-right tabular-nums text-muted-foreground">
+        {row.durationS > 0 ? formatDuration(row.durationS * 1000) : "—"}
+      </span>
+      <button
+        type="button"
+        onClick={() => onRemove(row.id)}
+        className="text-muted-foreground hover:text-foreground"
+        aria-label={`Remove ${row.display}`}
+      >
+        <X className="size-3.5" />
+      </button>
+    </div>
+  );
+});
 
 const VERDICT_COPY: Record<string, { tone: string; text: string }> = {
   fits: { tone: "text-muted-foreground", text: "Fits" },

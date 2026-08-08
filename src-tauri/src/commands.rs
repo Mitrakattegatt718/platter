@@ -38,6 +38,38 @@ fn emit_progress(app: &AppHandle, text: impl Into<String>, fraction: Option<f64>
     );
 }
 
+/// Wall-clock throttle for IPC progress events. One event per file is fine
+/// for an album drop; for a ten-thousand-file batch it means ten thousand
+/// events and ten thousand React state updates on the other end. `force`
+/// delivers boundary states regardless of the clock.
+struct ProgressThrottle {
+    app: AppHandle,
+    last: std::sync::Mutex<Option<std::time::Instant>>,
+}
+
+impl ProgressThrottle {
+    fn new(app: &AppHandle) -> Self {
+        Self {
+            app: app.clone(),
+            last: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn emit(&self, text: impl Into<String>, fraction: Option<f64>, force: bool) {
+        {
+            let mut last = self.last.lock().unwrap();
+            let now = std::time::Instant::now();
+            if !force
+                && last.is_some_and(|t| now.duration_since(t).as_millis() < 100)
+            {
+                return;
+            }
+            *last = Some(now);
+        }
+        emit_progress(&self.app, text, fraction);
+    }
+}
+
 fn c_string(s: &str) -> Result<CString, String> {
     CString::new(s).map_err(|_| "text contains a NUL byte".to_string())
 }
@@ -177,21 +209,23 @@ fn read_tags_blocking(app: &AppHandle, paths: Vec<String>) -> Vec<PendingImport>
     // High-water mark so parallel completions never emit a lower count after
     // a higher one — the progress bar must not move backwards.
     let emitted = AtomicUsize::new(0);
+    let throttle = ProgressThrottle::new(app);
 
     let mut results: Vec<Option<PendingImport>> = (0..total).map(|_| None).collect();
     std::thread::scope(|s| {
         for (paths_chunk, out_chunk) in paths.chunks(chunk).zip(results.chunks_mut(chunk)) {
             let done = &done;
             let emitted = &emitted;
+            let throttle = &throttle;
             s.spawn(move || {
                 for (path, out) in paths_chunk.iter().zip(out_chunk.iter_mut()) {
                     *out = Some(tags::read(path));
                     let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                     if emitted.fetch_max(n, Ordering::Relaxed) < n {
-                        emit_progress(
-                            app,
+                        throttle.emit(
                             format!("Reading tags — {n} of {total}"),
                             Some(n as f64 / total as f64),
+                            n == total,
                         );
                     }
                 }
@@ -267,6 +301,7 @@ fn prepare_sources(
     let out_dir = convert::fresh_out_dir();
     let total = work.len();
     let emitted = AtomicUsize::new(0);
+    let throttle = ProgressThrottle::new(app);
     let results = convert::prepare_batch(
         &work,
         &out_dir,
@@ -275,10 +310,10 @@ fn prepare_sources(
         &convert::ProgressOnly(&|n, name| {
             // High-water mark so parallel completions never move the bar back.
             if emitted.fetch_max(n, Ordering::Relaxed) < n {
-                emit_progress(
-                    app,
+                throttle.emit(
                     format!("Converting {n} of {total} — {name}"),
                     Some(n as f64 / total as f64),
+                    n == total,
                 );
             }
         }),
@@ -325,14 +360,15 @@ fn import_tracks_blocking(
         failed_indices.push(*index);
     }
 
+    let throttle = ProgressThrottle::new(app);
     for (index, item) in items.iter().enumerate() {
         let Some(source) = &sources[index] else {
             continue; // conversion already recorded the failure
         };
-        emit_progress(
-            app,
+        throttle.emit(
             format!("Importing {} of {} — {}", index + 1, total, item.title),
             Some(index as f64 / total as f64),
+            index + 1 == total,
         );
 
         // A converted source is a different file than the one whose tags were
@@ -452,6 +488,7 @@ pub async fn import_files(
         let out_dir = convert::fresh_out_dir();
         let total = items.len();
         let emitted = AtomicUsize::new(0);
+        let throttle = ProgressThrottle::new(&app);
         let results = convert::prepare_batch(
             &items,
             &out_dir,
@@ -459,10 +496,10 @@ pub async fn import_files(
             &convert::ConvertControl::default(),
             &convert::ProgressOnly(&|n, name| {
                 if emitted.fetch_max(n, Ordering::Relaxed) < n {
-                    emit_progress(
-                        &app,
+                    throttle.emit(
                         format!("Converting {n} of {total} — {name}"),
                         Some(n as f64 / total as f64),
+                        n == total,
                     );
                 }
             }),
@@ -710,9 +747,16 @@ pub async fn convert_add(
         let scanned = convert::scan(&paths);
         // Read the mount before taking the queue lock; never hold both.
         let mount = lib.lock().unwrap().mount_point().map(str::to_string);
+        // Short lock to diff, NO lock for the probing (the slow part), then a
+        // short lock to insert — see probe_items for why.
+        let fresh = {
+            let mut q = queue.lock().unwrap();
+            q.ipod_mount = mount;
+            q.fresh_of(scanned)
+        };
+        let probed = convert_job::probe_items(&fresh, &tools.ffprobe);
         let mut q = queue.lock().unwrap();
-        q.ipod_mount = mount;
-        q.extend(scanned, &tools.ffprobe);
+        q.insert_probed(fresh, probed);
         Ok(q.rows(None))
     })
     .await
@@ -804,6 +848,8 @@ struct JobEvents {
     current: std::sync::Mutex<String>,
     pending: std::sync::Mutex<Vec<serde_json::Value>>,
     last_flush: std::sync::Mutex<std::time::Instant>,
+    /// None until the first converting-phase emit, which must always land.
+    last_progress: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 impl JobEvents {
@@ -817,10 +863,23 @@ impl JobEvents {
             current: std::sync::Mutex::new(String::new()),
             pending: std::sync::Mutex::new(Vec::new()),
             last_flush: std::sync::Mutex::new(std::time::Instant::now()),
+            last_progress: std::sync::Mutex::new(None),
         }
     }
 
     fn emit_progress(&self, phase: &str, file_fraction: Option<f64>) {
+        // started/finished/file_progress all flow through here; with stream-copy
+        // and tiny files that's several events per file, each one waking the
+        // webview for a full re-render. Phase changes go through immediately;
+        // steady-state converting updates don't need more than ~10/s.
+        if phase == "converting" {
+            let mut last = self.last_progress.lock().unwrap();
+            let now = std::time::Instant::now();
+            if last.is_some_and(|t| now.duration_since(t).as_millis() < 100) {
+                return;
+            }
+            *last = Some(now);
+        }
         let done = self.done.load(Ordering::Relaxed);
         let _ = self.app.emit(
             "convert:progress",
@@ -1036,8 +1095,10 @@ pub async fn convert_start(
 }
 
 /// Extracts a track's cover thumbnail as a data URL. Extraction (pixbuf
-/// decode + PNG encode in the C bridge) runs under the lock; the file read
-/// and base64 run outside it, and finished URLs are cached per (track, size).
+/// decode + PNG encode in the C bridge) runs under the lock — libgpod is not
+/// thread-safe — while the base64 encode runs outside it, and finished URLs
+/// are cached per (track, size). The bytes arrive through a memory buffer,
+/// never a temp file.
 #[tauri::command]
 pub async fn get_artwork(
     state: State<'_, SharedLibrary>,
@@ -1049,10 +1110,6 @@ pub async fn get_artwork(
         let Ok(ptr) = id.parse::<usize>() else {
             return Ok(None);
         };
-        // Extraction AND the file read stay under the lock: the C bridge
-        // writes every (track,size) to one deterministic temp path, so an
-        // unlocked read could race a concurrent re-extraction truncating the
-        // same file. Only the base64 encode runs outside.
         let (bytes, gen) = {
             let guard = lib.lock().unwrap();
             if let Some(hit) = guard.art_cache_get(ptr, size) {
@@ -1061,13 +1118,13 @@ pub async fn get_artwork(
             let Some(track) = guard.resolve(&id) else {
                 return Ok(None);
             };
-            let raw = unsafe { gpod_get_track_artwork_png(track, size) };
-            let Some(path) = (unsafe { take_c_string(raw) }) else {
+            let mut len: std::os::raw::c_int = 0;
+            let raw = unsafe { gpod_get_track_artwork_png_bytes(track, size, &mut len) };
+            if raw.is_null() || len <= 0 {
                 return Ok(None);
-            };
-            let Ok(bytes) = std::fs::read(&path) else {
-                return Ok(None);
-            };
+            }
+            let bytes = unsafe { std::slice::from_raw_parts(raw, len as usize).to_vec() };
+            unsafe { libc::free(raw as *mut std::os::raw::c_void) };
             (bytes, guard.art_generation())
         };
         let url = format!(

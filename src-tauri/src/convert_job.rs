@@ -203,24 +203,51 @@ impl Queue {
         self.items.retain(|s| !ids.contains(&s.id));
     }
 
-    /// Appends scanned+probed work, skipping anything already queued.
-    pub fn extend(&mut self, scanned: Vec<WorkItem>, ffprobe: &Path) {
-        for mut item in scanned {
-            let already = self.items.iter().any(|s| {
-                s.item.src == item.src
-                    && s.item.cue.as_ref().map(|c| c.track_num)
-                        == item.cue.as_ref().map(|c| c.track_num)
-            });
-            if already {
+    /// Phase 1 of staging: the scanned work that isn't already queued.
+    /// A set diff — walking the whole queue per scanned item (iter().any)
+    /// is quadratic, and a dropped music folder is exactly where thousands
+    /// of items meet an already-long queue.
+    pub fn fresh_of(&self, scanned: Vec<WorkItem>) -> Vec<WorkItem> {
+        let mut queued: std::collections::HashSet<(PathBuf, Option<u32>)> = self
+            .items
+            .iter()
+            .map(|s| (s.item.src.clone(), s.item.cue.as_ref().map(|c| c.track_num)))
+            .collect();
+        scanned
+            .into_iter()
+            .filter(|item| {
+                queued.insert((
+                    item.src.clone(),
+                    item.cue.as_ref().map(|c| c.track_num),
+                ))
+            })
+            .collect()
+    }
+
+    /// Phase 3 of staging: insert probed items, re-diffing first — the queue
+    /// may have changed while probing ran without the lock. The diff runs
+    /// per-item here rather than via fresh_of so outcomes stay index-aligned
+    /// with the work they describe.
+    pub fn insert_probed(
+        &mut self,
+        fresh: Vec<WorkItem>,
+        probed: Vec<Option<(MediaProbe, u64)>>,
+    ) {
+        let mut queued: std::collections::HashSet<(PathBuf, Option<u32>)> = self
+            .items
+            .iter()
+            .map(|s| (s.item.src.clone(), s.item.cue.as_ref().map(|c| c.track_num)))
+            .collect();
+        for (mut item, outcome) in fresh.into_iter().zip(probed) {
+            if !queued.insert((
+                item.src.clone(),
+                item.cue.as_ref().map(|c| c.track_num),
+            )) {
                 continue;
             }
-            let Some(probe) = convert::probe_media(ffprobe, &item.src) else {
+            let Some((probe, source_bytes)) = outcome else {
                 continue;
             };
-            if probe.codec.is_empty() {
-                continue;
-            }
-            let source_bytes = std::fs::metadata(&item.src).map(|m| m.len()).unwrap_or(0);
             self.next_id += 1;
             let id = self.next_id;
             // Carried into the batch so the run doesn't re-probe a queue that
@@ -469,6 +496,41 @@ pub fn take_work(queue: &mut Queue) -> Vec<WorkItem> {
 
 pub fn next_job_id(queue: &Queue) -> u64 {
     queue.job_seq.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+/// Phase 2 of staging: probe (media, bytes) per fresh item on a worker pool,
+/// index-aligned with the input. None slots are files ffprobe couldn't read
+/// or that hold no audio. Runs outside the queue lock — one ffprobe spawn per
+/// file, serially and under the lock, put a several-hundred-file add behind
+/// a long wait that also froze convert_estimate, convert_remove and
+/// cancel_convert (all of which take the same lock).
+pub fn probe_items(items: &[WorkItem], ffprobe: &Path) -> Vec<Option<(MediaProbe, u64)>> {
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(2, 8)
+        .min(items.len());
+    let next = AtomicU64::new(0);
+    let results: Vec<Mutex<Option<(MediaProbe, u64)>>> =
+        items.iter().map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::Relaxed) as usize;
+                let Some(item) = items.get(i) else { break };
+                let probed = convert::probe_media(ffprobe, &item.src)
+                    .filter(|p| !p.codec.is_empty());
+                if let Some(probe) = probed {
+                    let bytes = std::fs::metadata(&item.src).map(|m| m.len()).unwrap_or(0);
+                    *results[i].lock().unwrap() = Some((probe, bytes));
+                }
+            });
+        }
+    });
+    results
+        .into_iter()
+        .map(|m| m.into_inner().unwrap())
+        .collect()
 }
 
 /// Sums what a finished run actually produced.

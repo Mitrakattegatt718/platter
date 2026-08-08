@@ -85,11 +85,19 @@ pub struct Library {
     /// (pointer values can be reused by a later import), and the whole map is
     /// dropped on open/close.
     art_cache: HashMap<(usize, i32), Arc<str>>,
+    /// Insertion order of art_cache keys, for FIFO eviction at the cap —
+    /// scrolling a several-thousand-album library must not grow the map
+    /// without bound.
+    art_order: std::collections::VecDeque<(usize, i32)>,
     /// Bumped whenever cached art could be stale (open/close/evict). An
     /// extraction that started before the bump must not be inserted after it
     /// — art_cache_put checks the generation captured at extraction time.
     art_gen: u64,
 }
+
+/// Thumbnails kept in memory. 80px PNGs run 10-40 KB of base64 each, so this
+/// bounds the cache somewhere around a few tens of MB.
+const ART_CACHE_CAP: usize = 512;
 
 // Raw pointers strip Send; sound here because the pointer is only ever used
 // while holding the Mutex that owns this struct.
@@ -103,6 +111,7 @@ pub fn new_shared() -> SharedLibrary {
         mount_point: None,
         live_refs: HashSet::new(),
         art_cache: HashMap::new(),
+        art_order: std::collections::VecDeque::new(),
         art_gen: 0,
     }))
 }
@@ -134,6 +143,7 @@ impl Library {
         self.mount_point = None;
         self.live_refs.clear();
         self.art_cache.clear();
+        self.art_order.clear();
         self.art_gen += 1;
     }
 
@@ -167,8 +177,19 @@ impl Library {
     /// remove + pointer reuse, reopen) between extraction and insert — the
     /// stale result must be dropped, not cached.
     pub fn art_cache_put(&mut self, ptr: usize, size: i32, gen: u64, data_url: Arc<str>) {
-        if gen == self.art_gen && self.live_refs.contains(&ptr) {
-            self.art_cache.insert((ptr, size), data_url);
+        if gen != self.art_gen || !self.live_refs.contains(&ptr) {
+            return;
+        }
+        let key = (ptr, size);
+        // Re-insertion of an existing key must not double-book the deque.
+        if !self.art_cache.contains_key(&key) {
+            self.art_order.push_back(key);
+        }
+        self.art_cache.insert(key, data_url);
+        while self.art_order.len() > ART_CACHE_CAP {
+            if let Some(evicted) = self.art_order.pop_front() {
+                self.art_cache.remove(&evicted);
+            }
         }
     }
 
@@ -177,6 +198,7 @@ impl Library {
     pub fn art_cache_evict(&mut self, ids: &[String]) {
         let ptrs: HashSet<usize> = ids.iter().filter_map(|id| id.parse().ok()).collect();
         self.art_cache.retain(|(ptr, _), _| !ptrs.contains(ptr));
+        self.art_order.retain(|(ptr, _)| !ptrs.contains(ptr));
         self.art_gen += 1;
     }
 

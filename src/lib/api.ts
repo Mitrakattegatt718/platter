@@ -58,9 +58,23 @@ export const api = {
  * concurrent mounts share one fetch, and a resolved map so remounts can paint
  * synchronously with no placeholder flash. Entries survive metadata edits —
  * art only changes through set_artwork / remove / open, which invalidate
- * explicitly. */
+ * explicitly. Both maps are FIFO-capped: scrolling a several-thousand-album
+ * library must not grow them (and the base64 strings they hold) without
+ * bound. Maps iterate in insertion order, so eviction just deletes the
+ * oldest keys seen first. */
+const ART_CACHE_LIMIT = 1500;
 const artworkPromises = new Map<string, Promise<string | null>>();
 const artworkResolved = new Map<string, string | null>();
+
+function trimArtworkCaches() {
+  if (artworkPromises.size <= ART_CACHE_LIMIT) return;
+  let toDrop = artworkPromises.size - ART_CACHE_LIMIT;
+  for (const key of artworkPromises.keys()) {
+    artworkPromises.delete(key);
+    artworkResolved.delete(key);
+    if (--toDrop <= 0) break;
+  }
+}
 
 export function cachedArtwork(id: string, size: number): Promise<string | null> {
   const key = `${id}@${size}`;
@@ -78,6 +92,7 @@ export function cachedArtwork(id: string, size: number): Promise<string | null> 
         return url;
       });
     artworkPromises.set(key, fetch);
+    trimArtworkCaches();
     hit = fetch;
   }
   return hit;
