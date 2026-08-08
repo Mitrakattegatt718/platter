@@ -29,3 +29,6 @@ src-tauri/gen/schemas
 
 # Symlink to src-tauri/target/release/bundle
 build
+
+# Staged ffmpeg/ffprobe sidecars (see stage-ffmpeg.sh)
+src-tauri/binaries
