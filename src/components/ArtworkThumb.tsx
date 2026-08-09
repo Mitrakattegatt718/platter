@@ -10,11 +10,15 @@ export function ArtworkThumb({
   trackId,
   size,
   missingCount = 0,
+  fill = false,
   className,
 }: {
   trackId: string | null;
   size: number;
   missingCount?: number;
+  /** Fluid mode: skip the fixed pixel box so a parent grid sizes the tile
+   * (cover walls); className then carries w-full h-full. */
+  fill?: boolean;
   className?: string;
 }) {
   // Paint synchronously from the resolved cache when possible — with a
@@ -48,14 +52,18 @@ export function ArtworkThumb({
     };
   }, [trackId, fetchSize, artVersion]);
 
-  const box = { width: size, height: size };
+  const box = fill ? undefined : { width: size, height: size };
 
   if (src) {
     return (
       <img
         src={src}
         style={box}
-        className={cn("shrink-0 rounded object-cover", className)}
+        className={cn(
+          "shrink-0 rounded object-cover",
+          fill && "h-full w-full",
+          className,
+        )}
         alt=""
       />
     );
@@ -65,6 +73,7 @@ export function ArtworkThumb({
       style={box}
       className={cn(
         "flex shrink-0 flex-col items-center justify-center gap-0.5 rounded bg-muted text-muted-foreground",
+        fill && "h-full w-full",
         className,
       )}
     >

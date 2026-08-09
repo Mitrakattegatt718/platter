@@ -103,18 +103,36 @@ function sectionHeading(ctx: CanvasRenderingContext2D, text: string, y: number, 
 }
 
 /** Draws the card and resolves with a PNG blob; null when canvas/blobbing is
- * unavailable (headless contexts). */
+ * unavailable (headless contexts). `covers` are data URLs for the top albums —
+ * up to five, skipped cleanly when the library has no art. */
 export async function renderShareCard(
   stats: ListeningStats,
   deviceName: string | null,
+  covers: string[] = [],
 ): Promise<Blob | null> {
   const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
   const p = dark ? DARK : LIGHT;
   const artists = stats.topArtists.slice(0, 5);
   const tracks = stats.topTracks.slice(0, 5);
 
+  // Decode covers up front so failed images shrink the strip rather than
+  // leaving holes in it.
+  const imgs: HTMLImageElement[] = [];
+  for (const url of covers.slice(0, 5)) {
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      imgs.push(img);
+    } catch {
+      // one broken cover shouldn't sink the export
+    }
+  }
+
+  const coverH = imgs.length > 0 ? 96 : 0;
   const dpr = 2;
-  const metricsY = PAD + 34 /* title */ + 6 /* gap */ + 58 /* metrics block */;
+  const metricsY =
+    PAD + 34 /* title */ + coverH + (coverH > 0 ? 18 : 0) + 6 /* gap */ + 58; /* metrics block */
   let height = metricsY + 26; // breathing room after metrics
   if (artists.length > 0) height += 14 + artists.length * 30;
   if (tracks.length > 0) height += 18 + 14 + tracks.length * 30;
@@ -143,6 +161,25 @@ export async function renderShareCard(
     day: "numeric",
   });
   ctx.fillText([deviceName, date].filter(Boolean).join(" · "), PAD, PAD + 18);
+
+  // Cover strip: the five most-played albums, evenly spaced squares.
+  if (imgs.length > 0) {
+    const size = 96;
+    const gap = (W - PAD * 2 - imgs.length * size) / Math.max(imgs.length - 1, 1);
+    imgs.forEach((img, i) => {
+      const x = PAD + i * (size + gap);
+      const y = PAD + 34;
+      ctx.save();
+      roundRect(ctx, x, y, size, size, 8);
+      ctx.clip();
+      // object-cover behavior: scale to fill the square, centered.
+      const scale = Math.max(size / img.naturalWidth, size / img.naturalHeight);
+      const dw = img.naturalWidth * scale;
+      const dh = img.naturalHeight * scale;
+      ctx.drawImage(img, x - (dw - size) / 2, y - (dh - size) / 2, dw, dh);
+      ctx.restore();
+    });
+  }
 
   // Metrics row, label over value.
   const playedPct =
