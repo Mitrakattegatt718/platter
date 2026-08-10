@@ -1,4 +1,4 @@
-import { memo, useRef, useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { CircleDashed, Circle, Search, X, CheckCircle2 } from "lucide-react";
 import { Highlight } from "@/components/Highlight";
@@ -72,6 +72,50 @@ export function TrackList({
     overscan: 12,
   });
 
+  // Section stays readable while scrolling: a pinned copy of the current
+  // group header covers the scrollport top. Rows in this list are absolutely
+  // positioned siblings, so the header itself can never stick — the overlay
+  // mirrors it instead, and flips to the next group the moment that header's
+  // top edge crosses the top (while its body slides hidden underneath).
+  const vItems = virtualizer.getVirtualItems();
+  const scrollOffset = virtualizer.scrollOffset ?? 0;
+  let cursorIndex = vItems.length > 0 ? vItems[0].index : -1;
+  for (const item of vItems) {
+    // The cursor is the row intersecting the scrollport's top edge; overscan
+    // rows above it start before the offset, so the last such item wins.
+    if (item.start <= scrollOffset) cursorIndex = item.index;
+    else break;
+  }
+
+  /** Row indices of every group header, for mapping the cursor to its
+   * owning section without walking rows back one by one. */
+  const groupRowIndices = useMemo(() => {
+    const indices: number[] = [];
+    rows.forEach((row, i) => {
+      if (row.kind === "artist") indices.push(i);
+    });
+    return indices;
+  }, [rows]);
+
+  let activeGroup: TrackGroup | null = null;
+  if (cursorIndex >= 0) {
+    // Last group header at or before the cursor owns the section under it.
+    let lo = 0;
+    let hi = groupRowIndices.length - 1;
+    let found = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (groupRowIndices[mid] <= cursorIndex) {
+        found = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    const row = found >= 0 ? rows[groupRowIndices[found]] : null;
+    if (row?.kind === "artist") activeGroup = row.group;
+  }
+
   const selStateOf = (tracks: Track[]): SelState => {
     let selected = 0;
     for (const t of tracks) if (selection.has(t.id)) selected++;
@@ -123,6 +167,30 @@ export function TrackList({
         className="flex-1 overflow-y-auto select-none"
         onMouseLeave={() => setHoveredGroup(null)}
       >
+        {/* Zero-height sticky wrapper: it sticks without taking flow space
+            (which would push the virtual canvas down), while its overflowing
+            child still renders and receives clicks. At the section's own top
+            the pinned copy sits exactly over the identical natural header,
+            so covering is indistinguishable from sticking. */}
+        {activeGroup && (
+          <div className="sticky top-0 z-10 h-0 overflow-visible">
+            <div
+              className="border-b bg-background"
+              onMouseEnter={() => setHoveredGroup(activeGroup.id)}
+            >
+              <ArtistHeader
+                key={activeGroup.id}
+                group={activeGroup}
+                collapsed={collapsedGroups.has(activeGroup.id)}
+                selState={selStateOf(activeGroup.tracks)}
+                hovered={hoveredGroup === activeGroup.id}
+                query={searchQuery}
+                onToggle={onToggleGroup}
+                onToggleSelection={onToggleGroupSelection}
+              />
+            </div>
+          </div>
+        )}
         <div
           className="relative w-full"
           style={{ height: virtualizer.getTotalSize() + 24 }}
