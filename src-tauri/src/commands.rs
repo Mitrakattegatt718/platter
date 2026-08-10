@@ -188,6 +188,20 @@ pub async fn save_library(state: State<'_, SharedLibrary>) -> Result<(), String>
     blocking(move || lib.lock().unwrap().save()).await
 }
 
+/// Opens the System Settings pane where the user grants removable-volume
+/// access (macOS TCC — "Operation not permitted" when it's missing). The
+/// pane shows per-app toggles under Files & Folders; the app must be quit
+/// and relaunched after granting.
+#[tauri::command]
+pub async fn open_privacy_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders")
+        .spawn()
+        .map_err(|e| format!("Couldn't open System Settings: {e}"))?;
+    Ok(())
+}
+
 /// Tag reading is pure Rust with no shared state, so files parse on all
 /// cores; results come back in input order.
 #[tauri::command]

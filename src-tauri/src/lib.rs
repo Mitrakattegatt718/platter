@@ -18,6 +18,7 @@ pub fn run() {
             commands::close_library,
             commands::eject_ipod,
             commands::save_library,
+            commands::open_privacy_settings,
             commands::read_tags,
             commands::import_tracks,
             commands::import_files,

@@ -23,6 +23,7 @@ export const api = {
     invoke<LibrarySnapshot>("open_library", { mountPoint }),
   closeLibrary: () => invoke<LibrarySnapshot>("close_library"),
   ejectIpod: () => invoke<LibrarySnapshot>("eject_ipod"),
+  openPrivacySettings: () => invoke<void>("open_privacy_settings"),
   readTags: (paths: string[]) => invoke<PendingImport[]>("read_tags", { paths }),
   importTracks: (items: PendingImport[]) =>
     // The preview data URL is dead weight on the way back in — the backend

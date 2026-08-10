@@ -34,10 +34,12 @@ import { CapacityGauge } from "@/components/CapacityGauge";
 import { ImportDialog } from "@/components/ImportDialog";
 import { DisconnectedView } from "@/components/DisconnectedView";
 import { MountPickerDialog } from "@/components/MountPickerDialog";
+import { PermissionBanner, PermissionPrimer } from "@/components/PermissionPrimer";
 import { ProgressBanner } from "@/components/ProgressBanner";
 import { ConvertView } from "@/components/ConvertView";
 import { StatsView } from "@/components/StatsView";
 import { ViewTabs } from "@/components/ViewTabs";
+import { recordActivity } from "@/lib/activity";
 import { TrackEditPanel } from "@/components/TrackEditPanel";
 import { TrackList } from "@/components/TrackList";
 import { api, invalidateArtwork } from "@/lib/api";
@@ -114,6 +116,25 @@ export default function App() {
   const [convertProgress, setConvertProgress] = useState<number | null>(null);
   const detailRef = useRef<HTMLDivElement>(null);
 
+  // First-run TCC primer: shown once. Declining raises the quiet banner
+  // instead; dismissing that banner is also remembered. A genuine EPERM
+  // failure later still routes through the error dialog.
+  const [showPermPrimer, setShowPermPrimer] = useState(
+    () => localStorage.getItem("permPrimer") === null,
+  );
+  const [showPermBanner, setShowPermBanner] = useState(false);
+  const decidePermPrimer = useCallback((accepted: boolean) => {
+    localStorage.setItem("permPrimer", accepted ? "accepted" : "declined");
+    setShowPermPrimer(false);
+    if (!accepted && localStorage.getItem("permBanner") !== "dismissed") {
+      setShowPermBanner(true);
+    }
+  }, []);
+  const dismissPermBanner = useCallback(() => {
+    localStorage.setItem("permBanner", "dismissed");
+    setShowPermBanner(false);
+  }, []);
+
   // Read inside callbacks that must not re-subscribe on every snapshot.
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
@@ -155,6 +176,13 @@ export default function App() {
     const title = snapshot.mountPoint ? `iPod (${snapshot.mountPoint})` : "PodSync";
     getCurrentWindow().setTitle(title).catch(() => {});
   }, [snapshot.mountPoint]);
+
+  // Fold each connected snapshot into the per-day activity log feeding the
+  // Stats heatmap — recording here means days fill in even if the Stats
+  // view is never opened on a given sync.
+  useEffect(() => {
+    if (snapshot.mountPoint) recordActivity(snapshot.tracks, snapshot.mountPoint);
+  }, [snapshot]);
 
   // The window starts hidden (tauri.conf.json) so launch never flashes an
   // unpainted white surface; show it once React has committed a frame.
@@ -446,12 +474,12 @@ export default function App() {
       {/* The tools row is always present now: converting to a folder on the
           Mac is a legitimate use with no iPod attached. Library-specific
           chrome inside it still appears only once a library is open. */}
-      <header className="flex h-11 shrink-0 items-center gap-3 border-b px-3">
-        <span className="text-sm font-semibold">
+      <header className="flex h-13 shrink-0 items-center gap-3 border-b px-4">
+        <ViewTabs view={view} onChange={setView} convertProgress={convertProgress} />
+        <span className="font-mono text-sm font-semibold">
           {snapshot.mountPoint ? `iPod (${snapshot.mountPoint})` : "PodSync"}
         </span>
         {isOpen && <CapacityGauge capacity={snapshot.capacity} />}
-        <ViewTabs view={view} onChange={setView} convertProgress={convertProgress} />
         <div className="flex-1" />
         <div className="flex items-center gap-1">
           <Button
@@ -526,6 +554,8 @@ export default function App() {
           )}
         </div>
       </header>
+
+      {showPermBanner && <PermissionBanner onDismiss={dismissPermBanner} />}
 
       <div className="relative flex min-h-0 flex-1">
         <div
@@ -669,19 +699,52 @@ export default function App() {
         onImport={importTracks}
       />
 
-      <AlertDialog open={lastError !== null}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Error</AlertDialogTitle>
-            <AlertDialogDescription className="whitespace-pre-wrap">
-              {lastError}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogAction onClick={() => setLastError(null)}>OK</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ErrorDialog error={lastError} onDismiss={() => setLastError(null)} />
+      {showPermPrimer && <PermissionPrimer onDecision={decidePermPrimer} />}
     </div>
+  );
+}
+
+/** macOS TCC blocks reads from removable volumes ("Operation not
+ * permitted") until the app is granted access — the prompt can be missed or
+ * silently denied, so this turns the raw failure into guided recovery. */
+function errorIsVolumeAccess(error: string): boolean {
+  return error.includes("Operation not permitted");
+}
+
+function ErrorDialog({
+  error,
+  onDismiss,
+}: {
+  error: string | null;
+  onDismiss: () => void;
+}) {
+  const volumeAccess = error !== null && errorIsVolumeAccess(error);
+  return (
+    <AlertDialog open={error !== null}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {volumeAccess ? "macOS blocked access to the iPod" : "Error"}
+          </AlertDialogTitle>
+          <AlertDialogDescription className="whitespace-pre-wrap">
+            {volumeAccess
+              ? `${error}\n\nmacOS requires explicit permission to read removable drives. Open System Settings and enable PodSync under Privacy & Security → Files & Folders → Removable Volumes (or grant Full Disk Access), then quit, relaunch and reconnect.\n\nRunning a dev build from a terminal? Grant that terminal the same access instead.`
+              : error}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          {volumeAccess && (
+            <Button
+              variant="outline"
+              onClick={() => void api.openPrivacySettings().catch(() => {})}
+            >
+              Open System Settings
+            </Button>
+          )}
+          <AlertDialogAction onClick={onDismiss}>OK</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
