@@ -63,4 +63,6 @@ Classic. Volume requirements (learned the hard way):
 - `src-tauri/examples/seed_podsim.rs` re-seeds a volume via the same
   GpodBridge FFI the app uses. Bitrates and play counts are invented
   deterministically (the stub audio has none); `--enrich` backfills them
-  on an already-seeded volume in place.
+  on an already-seeded volume in place. `--covers` replaces artwork in
+  place — the covers on disk are real album art (`/tmp/podsim-src/covers`),
+  fetched from the iTunes Search API and converted to PNG with `sips`.

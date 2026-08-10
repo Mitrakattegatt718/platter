@@ -5,9 +5,11 @@
 //!
 //!   cargo run --example seed_podsim -- <manifest> [mount]   fresh seed
 //!   cargo run --example seed_podsim -- --enrich [mount]     backfill stats
+//!   cargo run --example seed_podsim -- --covers [mount]     replace artwork
 //!
 //! --enrich patches an already-seeded volume in place (bitrate/playcount)
-//! without duplicating tracks.
+//! without duplicating tracks; --covers re-points every track's album art at
+//! covers/<slug>.png in place (the artless fixture album keeps no art).
 
 use podsync_tauri_lib::gpod::{self, GpodDbRef, GpodImportSpec, GpodTrackInfo, GpodTrackRef};
 use std::ffi::{CStr, CString};
@@ -179,16 +181,54 @@ fn enrich(mount: &str) {
     }
 }
 
+/// Re-points each track's artwork at covers/<album-slug>.png (the manifest's
+/// cover field is the album title with spaces as hyphens). Tracks whose album
+/// has no cover file — the fixture's intentionally artless album — are left
+/// untouched, so "has no art" stays representable.
+fn covers(mount: &str) {
+    unsafe {
+        let db = open_db(mount);
+        let mut count: i32 = 0;
+        let arr = gpod::gpod_tracks_collect(db, &mut count);
+        if arr.is_null() {
+            gpod::gpod_close(db);
+            panic!("{mount}: no tracks to cover");
+        }
+        let infos = std::slice::from_raw_parts(arr, count as usize);
+        let (mut set, mut skip) = (0usize, 0usize);
+        for info in infos {
+            let album = cstr_or(info.album, "");
+            let path = format!("/tmp/podsim-src/covers/{}.png", album.replace(' ', "-"));
+            if !std::path::Path::new(&path).exists() {
+                skip += 1;
+                continue;
+            }
+            let c = CString::new(path).unwrap();
+            if gpod::gpod_set_track_artwork(db, info.track_ref, c.as_ptr()) == 1 {
+                set += 1;
+            } else {
+                eprintln!("ART FAIL {}", cstr_or(info.title, "?"));
+            }
+        }
+        gpod::gpod_tracks_collect_free(arr, count);
+        write_and_close(db);
+        println!("covered {mount}: {set} tracks updated, {skip} left as-is");
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--enrich") => enrich(args.get(1).map(String::as_str).unwrap_or("/Volumes/PODSIM")),
+        Some("--covers") => covers(args.get(1).map(String::as_str).unwrap_or("/Volumes/PODSIM")),
         Some(manifest) => seed(
             manifest,
             args.get(1).map(String::as_str).unwrap_or("/Volumes/PODSIM"),
         ),
         None => {
-            eprintln!("usage: seed_podsim <manifest> [mount] | seed_podsim --enrich [mount]");
+            eprintln!(
+                "usage: seed_podsim <manifest> [mount] | --enrich [mount] | --covers [mount]"
+            );
             std::process::exit(1);
         }
     }
