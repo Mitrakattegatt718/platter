@@ -601,7 +601,7 @@ pub async fn update_track(
             year: fields.year,
         };
         unsafe { gpod_update_track_metadata(db, track, &edit) };
-        lib.save()?;
+        lib.mark_dirty();
         Ok(lib.snapshot())
     })
     .await
@@ -637,7 +637,7 @@ pub async fn set_field(
             }
             unsafe { gpod_update_track_metadata(db, track, &edit) };
         }
-        lib.save()?;
+        lib.mark_dirty();
         Ok(lib.snapshot())
     })
     .await
@@ -660,7 +660,7 @@ pub async fn set_artwork(
             }
         }
         lib.art_cache_evict(&ids);
-        lib.save()?;
+        lib.mark_dirty();
         Ok(lib.snapshot())
     })
     .await
@@ -682,7 +682,7 @@ pub async fn remove_tracks(
         }
         // Freed pointers can be reused by a later import — stale art must go.
         lib.art_cache_evict(&ids);
-        lib.save()?;
+        lib.mark_dirty();
         Ok(lib.snapshot())
     })
     .await

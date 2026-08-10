@@ -93,6 +93,11 @@ pub struct Library {
     /// extraction that started before the bump must not be inserted after it
     /// — art_cache_put checks the generation captured at extraction time.
     art_gen: u64,
+    /// True when in-memory changes haven't been flushed to the device yet.
+    dirty: bool,
+    /// When the last mutation happened — the auto-flush thread waits for a
+    /// short idle window so rapid edits coalesce into one iTunesDB write.
+    last_dirty_at: Option<std::time::Instant>,
 }
 
 /// Thumbnails kept in memory. 80px PNGs run 10-40 KB of base64 each, so this
@@ -106,14 +111,41 @@ unsafe impl Send for Library {}
 pub type SharedLibrary = Arc<Mutex<Library>>;
 
 pub fn new_shared() -> SharedLibrary {
-    Arc::new(Mutex::new(Library {
+    let lib = Arc::new(Mutex::new(Library {
         db: None,
         mount_point: None,
         live_refs: HashSet::new(),
         art_cache: HashMap::new(),
         art_order: std::collections::VecDeque::new(),
         art_gen: 0,
-    }))
+        dirty: false,
+        last_dirty_at: None,
+    }));
+    spawn_auto_flush(lib.clone());
+    lib
+}
+
+/// Polls every 500ms and flushes if the library has been dirty for >1.5s.
+/// Coalesces rapid edits (bulk tag writes, a flurry of metadata tweaks) into
+/// a single iTunesDB write, cutting flash wear and UI stalls. Runs for the
+/// app's lifetime; the lock is held only for the brief dirty check and the
+/// occasional flush.
+fn spawn_auto_flush(lib: SharedLibrary) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let should_flush = {
+            let lib = lib.lock().unwrap();
+            lib.dirty
+                && lib
+                    .last_dirty_at
+                    .map(|t| t.elapsed() > std::time::Duration::from_millis(1500))
+                    .unwrap_or(false)
+        };
+        if should_flush {
+            let mut lib = lib.lock().unwrap();
+            let _ = lib.flush_if_dirty();
+        }
+    });
 }
 
 impl Library {
@@ -137,6 +169,9 @@ impl Library {
     }
 
     pub fn close(&mut self) {
+        // Flush unsaved changes before dropping the handle — the auto-flush
+        // thread can't run after close, and the user's edits must survive.
+        let _ = self.flush_if_dirty();
         if let Some(db) = self.db.take() {
             unsafe { gpod_close(db) };
         }
@@ -145,15 +180,44 @@ impl Library {
         self.art_cache.clear();
         self.art_order.clear();
         self.art_gen += 1;
+        self.dirty = false;
+        self.last_dirty_at = None;
+    }
+
+    /// Marks the library dirty — the auto-flush thread will write it to the
+    /// device after a short idle window. Cheaper than save() for rapid edits.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+        self.last_dirty_at = Some(std::time::Instant::now());
+    }
+
+    /// Writes the iTunesDB only if there are unsaved changes.
+    pub fn flush_if_dirty(&mut self) -> Result<(), String> {
+        if self.dirty {
+            self.save()?;
+        }
+        Ok(())
     }
 
     pub fn save(&mut self) -> Result<(), String> {
         let db = self.db.ok_or("No iPod library is open.")?;
+        // Best-effort backup: an interrupted gpod_write can corrupt the
+        // iTunesDB and brick the iPod's library. The on-device .bak is the
+        // simplest recovery point — a failed backup doesn't block the
+        // write (the user still wants their edit saved).
+        if let Some(mount) = &self.mount_point {
+            let db_path = std::path::Path::new(mount)
+                .join("iPod_Control/iTunes/iTunesDB");
+            let bak_path = std::path::Path::new(mount)
+                .join("iPod_Control/iTunes/iTunesDB.bak");
+            let _ = std::fs::copy(&db_path, &bak_path);
+        }
         let mut err: *mut std::os::raw::c_char = std::ptr::null_mut();
         if unsafe { gpod_write(db, &mut err) } == 0 {
             let msg = unsafe { take_c_string(err) }.unwrap_or_else(|| "unknown error".into());
             return Err(format!("Couldn't save changes to iPod: {msg}"));
         }
+        self.dirty = false;
         Ok(())
     }
 

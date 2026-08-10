@@ -6,12 +6,23 @@ pub mod gpod;
 mod library;
 mod tags;
 
+use tauri::Manager;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(library::new_shared())
         .manage(convert_job::new_queue())
+        .on_window_event(|window, event| {
+            // Normal quit: flush any dirty state before the process exits.
+            // (Force-quit can't be caught; the 1.5s auto-flush covers that gap
+            // for all but the most recent edit.)
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                let lib = window.app_handle().state::<library::SharedLibrary>();
+                let _ = lib.lock().unwrap().flush_if_dirty();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::list_volumes,
             commands::open_library,
