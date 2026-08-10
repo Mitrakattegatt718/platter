@@ -152,7 +152,9 @@ export function Treemap({ title, items }: { title: string; items: RankedItem[] }
                   BAND_CLASSES[b],
                 )}
               >
-                {coverSize > 0 && item.artTrackId && (
+                {/* Null id renders the music-note placeholder — artless
+                    albums still get a tile so plates don't look empty. */}
+                {coverSize > 0 && (
                   <ArtworkThumb
                     trackId={item.artTrackId}
                     size={coverSize}

@@ -192,7 +192,9 @@ function Ranking({
         <span className="w-5 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground/70">
           {i + 1}
         </span>
-        {showArt && item.artTrackId && (
+        {/* ArtworkThumb falls back to a music-note tile for null ids, so
+            rows without art keep their shape and alignment. */}
+        {showArt && (
           <ArtworkThumb trackId={item.artTrackId} size={28} className="rounded" />
         )}
         <span
