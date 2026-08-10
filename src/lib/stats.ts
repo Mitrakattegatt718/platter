@@ -26,6 +26,11 @@ export interface ListeningStats {
 }
 
 const TOP = 10;
+/** The albums treemap wants density (stock-heatmap style): slivers with no
+ * label still sort in, everything identified by hover. */
+const ALBUMS_TREEMAP_TOP = 30;
+/** Tracks list shows 10 collapsed behind a "show more" expanding to 50. */
+const TRACKS_TOP = 50;
 
 export function computeStats(tracks: Track[]): ListeningStats {
   const artistPlays = new Map<string, number>();
@@ -71,7 +76,7 @@ export function computeStats(tracks: Track[]): ListeningStats {
 
   const topAlbums: RankedItem[] = [...albumPlays.values()]
     .sort((a, b) => b.plays - a.plays)
-    .slice(0, TOP)
+    .slice(0, ALBUMS_TREEMAP_TOP)
     .map((a) => ({
       name: a.album,
       subtitle: a.artist,
@@ -80,7 +85,7 @@ export function computeStats(tracks: Track[]): ListeningStats {
     }));
 
   played.sort((a, b) => b.playCount - a.playCount);
-  const topTracks: RankedItem[] = played.slice(0, TOP).map((t) => ({
+  const topTracks: RankedItem[] = played.slice(0, TRACKS_TOP).map((t) => ({
     name: t.title,
     subtitle: t.artist,
     plays: t.playCount,

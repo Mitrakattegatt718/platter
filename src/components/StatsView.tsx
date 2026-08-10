@@ -1,7 +1,10 @@
-import { useMemo, useState } from "react";
-import { BarChart3, Check, Share } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { BarChart3, Check, ChevronDown, Share } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ActivityHeatmap } from "@/components/ActivityHeatmap";
 import { ArtworkThumb } from "@/components/ArtworkThumb";
+import { Treemap } from "@/components/Treemap";
+import { readActivity } from "@/lib/activity";
 import { cachedArtwork } from "@/lib/api";
 import {
   computeStats,
@@ -24,7 +27,14 @@ export function StatsView({
   mountPoint: string | null;
 }) {
   const stats = useMemo(() => computeStats(tracks), [tracks]);
-  const covers = useMemo(() => coverTrackIds(stats), [stats]);
+  // Generous pool: the wall slices to as many tiles as fit the window.
+  const covers = useMemo(() => coverTrackIds(stats, 40), [stats]);
+  // Keyed on tracks too: a snapshot landing while Stats is open (e.g. a sync
+  // finishing) should repaint the calendar without a view switch.
+  const activity = useMemo(
+    () => (mountPoint ? readActivity(mountPoint) : {}),
+    [mountPoint, tracks],
+  );
 
   if (mountPoint === null) {
     return (
@@ -42,16 +52,25 @@ export function StatsView({
       />
     );
   }
-  return <StatsBody stats={stats} covers={covers} deviceName={`iPod (${mountPoint})`} />;
+  return (
+    <StatsBody
+      stats={stats}
+      covers={covers}
+      activity={activity}
+      deviceName={`iPod (${mountPoint})`}
+    />
+  );
 }
 
 function StatsBody({
   stats,
   covers,
+  activity,
   deviceName,
 }: {
   stats: ListeningStats;
   covers: string[];
+  activity: Record<string, number>;
   deviceName: string;
 }) {
   const [copied, setCopied] = useState<null | boolean>(null);
@@ -83,16 +102,11 @@ function StatsBody({
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
-      {/* The covers are the B2C moment: a full-width wall of what the device
-          actually played, fading into the page. Everything below stays quiet. */}
+      {/* The covers are the B2C moment: a full-width seamless wall of what
+          the device actually played. Everything below stays quiet. */}
       {covers.length >= 4 && <CoverWall ids={covers} />}
 
-      <div
-        className={cn(
-          "mx-auto flex max-w-3xl flex-col gap-9 px-6",
-          covers.length >= 4 ? "-mt-2 pb-8" : "py-6",
-        )}
-      >
+      <div className="mx-auto flex max-w-3xl flex-col gap-9 px-6 pt-10 pb-6">
         <div className="flex items-start justify-between gap-4">
           <div className="flex min-w-0 flex-col gap-1.5">
             <h1 className="text-2xl font-semibold leading-snug text-balance">
@@ -132,98 +146,139 @@ function StatsBody({
           ))}
         </dl>
 
-        <div className="grid grid-cols-1 gap-9 sm:grid-cols-2 sm:gap-8">
-          <Ranking title="Top Artists" items={stats.topArtists} />
-          <Ranking title="Top Albums" items={stats.topAlbums} showArt />
-        </div>
-        <Ranking title="Top Tracks" items={stats.topTracks} showArt />
+        {/* Artists lead by time, not rank: the calendar shows when the
+            listening happened. topArtists stays computed for the share card. */}
+        <ActivityHeatmap data={activity} />
+
+        <Treemap title="Top Albums" items={stats.topAlbums} />
+        <Ranking title="Top Tracks" items={stats.topTracks} showArt collapseAfter={10} />
       </div>
     </div>
   );
 }
 
 /** A ranked bar list: each row's fill is its share of the leader's plays.
- * The narrow end floors at a visible sliver so rank 10 isn't an empty row. */
+ * The narrow end floors at a visible sliver so rank 10 isn't an empty row.
+ * With `collapseAfter` the tail hides behind a "show more" — expansion animates
+ * via CSS grid rows (0fr→1fr), the only reliably smooth auto-height trick. */
 function Ranking({
   title,
   items,
   showArt = false,
+  collapseAfter,
 }: {
   title: string;
   items: RankedItem[];
   showArt?: boolean;
+  collapseAfter?: number;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const max = Math.max(...items.map((i) => i.plays), 1);
+  const collateral = collapseAfter !== undefined && items.length > collapseAfter;
+  const head = collateral ? items.slice(0, collapseAfter) : items;
+  const tail = collateral ? items.slice(collapseAfter) : [];
+
+  const row = (item: RankedItem, i: number) => (
+    <li
+      key={`${item.name}-${i}`}
+      className="relative overflow-hidden rounded-md py-1 pl-1.5 pr-2"
+    >
+      <div
+        aria-hidden
+        className="absolute inset-y-0 left-0 rounded-md bg-primary/10"
+        style={{ width: `${(Math.max(0.03, item.plays / max) * 100).toFixed(2)}%` }}
+      />
+      <div className="relative flex items-center gap-2">
+        <span className="w-5 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground/70">
+          {i + 1}
+        </span>
+        {showArt && item.artTrackId && (
+          <ArtworkThumb trackId={item.artTrackId} size={28} className="rounded" />
+        )}
+        <span
+          className={cn(
+            "min-w-0 truncate text-sm",
+            i === 0 && "font-semibold",
+          )}
+          title={item.subtitle ? `${item.name} — ${item.subtitle}` : item.name}
+        >
+          {item.name}
+          {item.subtitle && (
+            <span className="text-muted-foreground"> — {item.subtitle}</span>
+          )}
+        </span>
+        <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
+          {formatCount(item.plays)}
+        </span>
+      </div>
+    </li>
+  );
+
   return (
     <section className="flex min-w-0 flex-col gap-2">
       <h2 className="text-xs font-medium text-muted-foreground">{title}</h2>
-      <ol className="flex flex-col gap-0.5">
-        {items.map((item, i) => (
-          <li
-            key={`${item.name}-${i}`}
-            className="relative overflow-hidden rounded-md py-1 pl-1.5 pr-2"
+      <ol className="flex flex-col gap-0.5">{head.map((item, i) => row(item, i))}</ol>
+      {collateral && (
+        <>
+          <div
+            className={cn(
+              "grid transition-[grid-template-rows] duration-500 ease-out motion-reduce:transition-none",
+              expanded ? "[grid-template-rows:1fr]" : "[grid-template-rows:0fr]",
+            )}
           >
-            <div
-              aria-hidden
-              className="absolute inset-y-0 left-0 rounded-md bg-primary/10"
-              style={{ width: `${(Math.max(0.03, item.plays / max) * 100).toFixed(2)}%` }}
-            />
-            <div className="relative flex items-center gap-2">
-              <span className="w-5 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground/70">
-                {i + 1}
-              </span>
-              {showArt && item.artTrackId && (
-                <ArtworkThumb trackId={item.artTrackId} size={28} className="rounded" />
+            <ol className="flex min-h-0 flex-col gap-0.5 overflow-hidden">
+              {tail.map((item, k) => row(item, (collapseAfter ?? 0) + k))}
+            </ol>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="self-center"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            <ChevronDown
+              className={cn(
+                "transition-transform duration-300 motion-reduce:transition-none",
+                expanded && "rotate-180",
               )}
-              <span
-                className={cn(
-                  "min-w-0 truncate text-sm",
-                  i === 0 && "font-semibold",
-                )}
-                title={item.subtitle ? `${item.name} — ${item.subtitle}` : item.name}
-              >
-                {item.name}
-                {item.subtitle && (
-                  <span className="text-muted-foreground"> — {item.subtitle}</span>
-                )}
-              </span>
-              <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
-                {formatCount(item.plays)}
-              </span>
-            </div>
-          </li>
-        ))}
-      </ol>
+            />
+            {expanded ? "Show less" : `Show ${tail.length} more`}
+          </Button>
+        </>
+      )}
     </section>
   );
 }
 
-/** Full-width mosaic of the most-played covers, fading into the page.
- * Tiles are square and fluid; rows split evenly regardless of count. */
+/** Full-width seamless mosaic of the most-played covers — square tiles,
+ * no gaps or corner rounding. Column count follows the window width
+ * (~140px tiles), so resizing adds or removes covers. */
 function CoverWall({ ids }: { ids: string[] }) {
-  const top = ids.slice(0, Math.ceil(ids.length / 2));
-  const bottom = ids.slice(Math.ceil(ids.length / 2));
+  const ref = useRef<HTMLDivElement>(null);
+  const [cols, setCols] = useState(6);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const update = () => setCols(Math.max(3, Math.round(el.clientWidth / 140)));
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const shown = ids.slice(0, cols * 2);
   return (
-    <div className="relative select-none overflow-hidden" aria-hidden>
-      <div className="flex flex-col gap-1 px-1 pt-1">
-        {[top, bottom].map((row, ri) => (
-          <div
-            key={ri}
-            className="grid gap-1"
-            style={{ gridTemplateColumns: `repeat(${row.length}, minmax(0, 1fr))` }}
-          >
-            {row.map((id) => (
-              <div
-                key={id}
-                className="aspect-square w-full overflow-hidden rounded-md ring-1 ring-black/5 dark:ring-white/10"
-              >
-                <ArtworkThumb trackId={id} size={160} fill className="rounded-none" />
-              </div>
-            ))}
+    <div ref={ref} className="select-none overflow-hidden" aria-hidden>
+      <div
+        className="grid"
+        style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+      >
+        {shown.map((id) => (
+          <div key={id} className="aspect-square w-full overflow-hidden">
+            <ArtworkThumb trackId={id} size={160} fill className="rounded-none" />
           </div>
         ))}
       </div>
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-background to-transparent" />
     </div>
   );
 }
