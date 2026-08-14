@@ -1,12 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  ChevronRight,
-  HardDrive,
-  Loader2,
-  RefreshCw,
-  Smartphone,
-} from "lucide-react";
+import { ChevronRight, HardDrive, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DeviceGlyph } from "@/components/DeviceGlyph";
 import { api } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import type { VolumeInfo } from "@/lib/types";
@@ -144,9 +139,13 @@ export function DisconnectedView({
   }
 
   return (
-    <div className="flex h-full w-full min-h-0 items-center justify-center overflow-y-auto px-6 py-10">
-      <div className="flex w-full max-w-md flex-col gap-6">
-        <div className="flex flex-col items-center gap-3.5 text-center">
+    // Centred while everything fits; once it doesn't, max-h-full caps the
+    // column at the pane and the volume list — the only part that can grow —
+    // takes the overflow as its own scroll. The heading and the manual-path
+    // link stay put either way.
+    <div className="flex h-full w-full min-h-0 items-center justify-center overflow-hidden px-6 py-10">
+      <div className="flex max-h-full w-full min-h-0 max-w-md flex-col gap-6">
+        <div className="flex shrink-0 flex-col items-center gap-3.5 text-center">
           <IpodGlyph className="size-16" />
           <div className="flex flex-col gap-1.5">
             <h2 className="text-lg font-semibold tracking-tight">Connect an iPod</h2>
@@ -157,8 +156,8 @@ export function DisconnectedView({
           </div>
         </div>
 
-        <div className="flex flex-col gap-1.5">
-          <div className="flex h-6 items-center justify-between px-0.5">
+        <div className="flex min-h-0 flex-col gap-1.5">
+          <div className="flex h-6 shrink-0 items-center justify-between px-0.5">
             <span className="text-xs font-medium text-muted-foreground">
               Mounted volumes
             </span>
@@ -183,7 +182,7 @@ export function DisconnectedView({
               version that recognizes a Classic.
             </div>
           ) : (
-            <div className="flex flex-col overflow-hidden rounded-lg border border-border bg-card">
+            <div className="flex min-h-0 flex-col overflow-y-auto overscroll-contain rounded-lg border border-border bg-card">
               {ordered.map((vol, i) => {
                 const busy = connectingPath === vol.path;
                 const dimmed = connectingPath !== null && !busy;
@@ -195,7 +194,10 @@ export function DisconnectedView({
                     onClick={() => connect(vol.path)}
                     title={vol.isIpod ? "Connect to this iPod" : "Connect to this volume"}
                     className={cn(
-                      "group flex items-center gap-3 px-3 py-2.5 text-left transition-colors",
+                      // shrink-0: rows live in a scroll container now, and a
+                      // flex child's default shrink would squash them flat
+                      // instead of letting the list scroll.
+                      "group flex shrink-0 items-center gap-3 px-3 py-2.5 text-left transition-colors",
                       "outline-none focus-visible:bg-muted",
                       i > 0 && "border-t border-border",
                       busy ? "bg-primary/10" : "hover:bg-muted",
@@ -211,7 +213,7 @@ export function DisconnectedView({
                       {busy ? (
                         <Loader2 className="size-4 animate-spin" />
                       ) : vol.isIpod ? (
-                        <Smartphone className="size-4" />
+                        <DeviceGlyph family={vol.family} className="size-5" />
                       ) : (
                         <HardDrive className="size-4" />
                       )}
@@ -245,7 +247,7 @@ export function DisconnectedView({
         </div>
 
         <button
-          className="mx-auto rounded-md px-1.5 py-1 text-sm text-muted-foreground underline-offset-4 outline-none transition-colors hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="mx-auto shrink-0 rounded-md px-1.5 py-1 text-sm text-muted-foreground underline-offset-4 outline-none transition-colors hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring/50"
           onClick={onChooseManually}
         >
           Choose a path manually…

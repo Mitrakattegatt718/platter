@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AppIconInfo,
   ConvertEstimateResult,
   Destination,
   FormatOption,
@@ -11,6 +12,7 @@ import type {
   TargetSpec,
   TrackFields,
   VolumeInfo,
+  VolumeScan,
 } from "./types";
 
 /** Fields set_field can stamp across a selection — string-valued ones only;
@@ -23,7 +25,14 @@ export const api = {
     invoke<LibrarySnapshot>("open_library", { mountPoint }),
   closeLibrary: () => invoke<LibrarySnapshot>("close_library"),
   ejectIpod: () => invoke<LibrarySnapshot>("eject_ipod"),
+  /** Counts importable audio on a volume without importing anything. */
+  scanVolume: (path: string) => invoke<VolumeScan>("scan_volume", { path }),
   openPrivacySettings: () => invoke<void>("open_privacy_settings"),
+
+  listAppIcons: () => invoke<AppIconInfo[]>("list_app_icons"),
+  getAppIcon: () => invoke<string | null>("get_app_icon"),
+  /** null restores the bundle icon. Applies and persists in one call. */
+  setAppIcon: (id: string | null) => invoke<void>("set_app_icon", { id }),
   readTags: (paths: string[]) => invoke<PendingImport[]>("read_tags", { paths }),
   importTracks: (items: PendingImport[]) =>
     // The preview data URL is dead weight on the way back in — the backend

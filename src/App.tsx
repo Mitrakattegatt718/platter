@@ -181,7 +181,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const title = snapshot.mountPoint ? `iPod (${snapshot.mountPoint})` : "PodSync";
+    const title = snapshot.mountPoint ? `iPod (${snapshot.mountPoint})` : "Platter";
     getCurrentWindow().setTitle(title).catch(() => {});
   }, [snapshot.mountPoint]);
 
@@ -657,9 +657,20 @@ export default function App() {
 
         {view === "stats" && (
           <div className="min-h-0 flex-1">
-            <Suspense fallback={<TabLoading />}>
-              <StatsView tracks={snapshot.tracks} mountPoint={snapshot.mountPoint} />
-            </Suspense>
+            {snapshot.mountPoint === null ? (
+              // The same connect flow the Library tab shows: "no iPod" is one
+              // state of the app, not one per tab, and answering it with a
+              // dead-end notice here would make the user switch tabs to do
+              // the only thing there is to do.
+              <DisconnectedView
+                onConnect={connect}
+                onChooseManually={() => setShowMountPicker(true)}
+              />
+            ) : (
+              <Suspense fallback={<TabLoading />}>
+                <StatsView tracks={snapshot.tracks} mountPoint={snapshot.mountPoint} />
+              </Suspense>
+            )}
           </div>
         )}
 
@@ -732,7 +743,7 @@ function ErrorDialog({
           </AlertDialogTitle>
           <AlertDialogDescription className="whitespace-pre-wrap">
             {volumeAccess
-              ? `${error}\n\nmacOS requires explicit permission to read removable drives. Open System Settings and enable PodSync under Privacy & Security → Files & Folders → Removable Volumes (or grant Full Disk Access), then quit, relaunch and reconnect.\n\nRunning a dev build from a terminal? Grant that terminal the same access instead.`
+              ? `${error}\n\nmacOS requires explicit permission to read removable drives. Open System Settings and enable Platter under Privacy & Security → Files & Folders → Removable Volumes (or grant Full Disk Access), then quit, relaunch and reconnect.\n\nRunning a dev build from a terminal? Grant that terminal the same access instead.`
               : error}
           </AlertDialogDescription>
         </AlertDialogHeader>

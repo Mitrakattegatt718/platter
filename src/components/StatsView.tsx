@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { BarChart3, Check, ChevronDown, Share } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ActivityHeatmap } from "@/components/ActivityHeatmap";
@@ -18,7 +18,7 @@ import { copyImageToClipboard, renderShareCard } from "@/lib/shareCard";
 import type { Track } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-export function StatsView({
+function StatsViewImpl({
   tracks,
   mountPoint,
 }: {
@@ -48,7 +48,7 @@ export function StatsView({
     return (
       <EmptyState
         title="No plays recorded yet"
-        body="Go listen to some music on the iPod, then reconnect. The device writes its Play Counts file as you listen, and PodSync reads it on connect — your most-played artists, albums and tracks will appear here."
+        body="Go listen to some music on the iPod, then reconnect. The device writes its Play Counts file as you listen, and Platter reads it on connect — your most-played artists, albums and tracks will appear here."
       />
     );
   }
@@ -61,6 +61,10 @@ export function StatsView({
     />
   );
 }
+
+/** Both props come straight off the snapshot, so this only recomputes when the
+ * library actually changes — not on every keystroke in the Library tab. */
+export const StatsView = memo(StatsViewImpl);
 
 function StatsBody({
   stats,
@@ -287,7 +291,11 @@ function CoverWall({ ids }: { ids: string[] }) {
 
 function EmptyState({ title, body }: { title: string; body: string }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-8 text-center text-muted-foreground">
+    // h-full, not flex-1: the tab wrapper in App is a plain block, so a
+    // flex-1 here resolves against nothing and the state sits at the top of
+    // an otherwise empty pane. The wrapper's own height comes from being a
+    // stretched flex item, which is what makes 100% meaningful.
+    <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center text-muted-foreground">
       <BarChart3 className="size-10" />
       <p className="font-medium text-foreground">{title}</p>
       <p className="max-w-md text-xs leading-relaxed">{body}</p>

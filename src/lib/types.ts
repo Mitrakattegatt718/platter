@@ -67,6 +67,26 @@ export interface VolumeInfo {
   /** Live statvfs capacity; null when the lookup fails. */
   freeBytes: number | null;
   totalBytes: number | null;
+  /** Read from iPod_Control/Device/SysInfo. All null for a non-iPod volume,
+   * and for an iPod whose SysInfo is missing or names a model libgpod's table
+   * doesn't carry — restored and hand-built devices hit that. */
+  family: string | null;
+  /** libgpod's own name, which omits the "iPod" prefix: "Classic (Black)". */
+  model: string | null;
+  generation: string | null;
+  /** True only for a device positively identified as one this app can't
+   * manage — a Shuffle keeps its library in iTunesSD, a Touch in neither.
+   * Never true for an unidentified device. */
+  unsupported: boolean;
+}
+
+/** What importing a whole volume would bring in. Produced by the same scan
+ * the import itself runs, so the count is what actually lands. */
+export interface VolumeScan {
+  tracks: number;
+  /** Subset of `tracks` coming from cue sheets — those need an ffmpeg render
+   * before they can be imported, so they cost far more than plain files. */
+  cueTracks: number;
 }
 
 export interface PendingImport {
@@ -280,3 +300,12 @@ export const COMMON_GENRES = [
 ];
 
 export const IMPORTABLE_EXTENSIONS = ["mp3", "m4a", "aac"];
+
+/** One selectable app icon. `id` is null for the bundle's own icon, and
+ * `preview` is a data: URL the backend renders from the same bytes it applies,
+ * so the tile always shows what you'll actually get. */
+export interface AppIconInfo {
+  id: string | null;
+  label: string;
+  preview: string;
+}

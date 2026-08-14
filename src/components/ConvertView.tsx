@@ -54,7 +54,7 @@ function rateKbps(rate: Rate): number | null {
   return typeof rate === "object" && "cbr" in rate ? rate.cbr : null;
 }
 
-export function ConvertView({
+function ConvertViewImpl({
   ipodMount,
   onLibraryChanged,
   onProgressChange,
@@ -344,6 +344,12 @@ export function ConvertView({
   );
 }
 
+/** This stays mounted once visited so a running job keeps its queue, log and
+ * event subscriptions while the user works in another tab. memo is what stops
+ * that from costing a re-render on every unrelated shell update — all three
+ * props are stable identities. */
+export const ConvertView = memo(ConvertViewImpl);
+
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -531,7 +537,7 @@ function SourceList({
           <Music2 className="size-10" />
           <p className="text-sm font-medium">Nothing to Convert</p>
           <p className="max-w-sm text-xs">
-            Add audio files or a folder. PodSync reads each one, works out how big
+            Add audio files or a folder. Platter reads each one, works out how big
             the result will be, and tells you whether it fits before anything is
             written.
           </p>

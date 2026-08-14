@@ -17,9 +17,12 @@ export function ImportDialog({
   onOpenChange,
   onReadTags,
   onImport,
+  onBrowseDrive,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Closes this dialog and opens the drive picker. */
+  onBrowseDrive: () => void;
   /** Routed through App's run() so per-file progress shows and errors alert;
    * resolves null on failure. */
   onReadTags: (paths: string[]) => Promise<PendingImport[] | null>;
@@ -99,9 +102,22 @@ export function ImportDialog({
         <DialogHeader>
           <div className="flex items-center justify-between pr-6">
             <DialogTitle>Add Songs</DialogTitle>
-            <Button variant="outline" size="sm" onClick={chooseFiles} disabled={loading}>
-              Choose Files…
-            </Button>
+            <div className="flex items-center gap-2">
+              {/* Handing off to App rather than opening a dialog from inside
+                  this one: nesting two Dialogs fights over focus and the
+                  Escape key. */}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onBrowseDrive}
+                disabled={loading}
+              >
+                From Drive…
+              </Button>
+              <Button variant="outline" size="sm" onClick={chooseFiles} disabled={loading}>
+                Choose Files…
+              </Button>
+            </div>
           </div>
         </DialogHeader>
 
