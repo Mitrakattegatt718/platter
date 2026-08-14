@@ -1,11 +1,12 @@
 import { memo, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { CircleDashed, Circle, Search, X, CheckCircle2 } from "lucide-react";
+import { CircleDashed, Circle, CheckCircle2 } from "lucide-react";
 import { Highlight } from "@/components/Highlight";
 import { ArtworkThumb } from "@/components/ArtworkThumb";
+import { LibraryHeaderRow } from "@/components/LibraryHeaderRow";
 import { formatDuration } from "@/lib/format";
 import { rowGroupId, type AlbumSubgroup, type ListRow, type TrackGroup } from "@/lib/grouping";
-import type { Track } from "@/lib/types";
+import type { Track, TrackGrouping, TrackSort } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** One grid definition shared by the column heading and every row — the two
@@ -16,7 +17,7 @@ const COLUMNS =
 
 type SelState = "all" | "some" | "none";
 
-export function TrackList({
+function TrackListImpl({
   rows,
   searchValue,
   searchQuery,
@@ -30,6 +31,13 @@ export function TrackList({
   onToggleAlbumSelection,
   onToggleGroupSelection,
   isDropTarget,
+  onDeselectAll,
+  onAdd,
+  addDisabled,
+  grouping,
+  onGroupingChange,
+  sort,
+  onSortChange,
 }: {
   rows: ListRow[];
   /** Live input value. */
@@ -47,6 +55,18 @@ export function TrackList({
   onToggleAlbumSelection: (album: AlbumSubgroup) => void;
   onToggleGroupSelection: (group: TrackGroup) => void;
   isDropTarget: boolean;
+  /* Flat props rather than one grouped object on purpose: this component is
+   * memo'd (see the note above the export) so progress ticks and dialog state
+   * in App don't re-render a virtualized list of thousands of rows. An object
+   * literal would be a new identity on every App render and would defeat that;
+   * primitives and useCallback'd handlers do not. */
+  onDeselectAll: () => void;
+  onAdd: () => void;
+  addDisabled: boolean;
+  grouping: TrackGrouping;
+  onGroupingChange: (grouping: TrackGrouping) => void;
+  sort: TrackSort;
+  onSortChange: (sort: TrackSort) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   /** Section under the pointer. Rows are absolutely positioned siblings, so
@@ -125,23 +145,18 @@ export function TrackList({
 
   return (
     <div className="relative flex h-full min-w-0 flex-col">
-      <div className="flex items-center gap-1.5 border-b bg-muted/30 px-3 py-2">
-        <Search className="size-4 shrink-0 text-muted-foreground" />
-        <input
-          className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-          placeholder="Search title, artist or album"
-          value={searchValue}
-          onChange={(e) => onSearchChange(e.target.value)}
-        />
-        {searchValue && (
-          <button
-            className="text-muted-foreground hover:text-foreground"
-            onClick={() => onSearchChange("")}
-          >
-            <X className="size-4" />
-          </button>
-        )}
-      </div>
+      <LibraryHeaderRow
+        searchValue={searchValue}
+        onSearchChange={onSearchChange}
+        selectedCount={selection.size}
+        onDeselectAll={onDeselectAll}
+        onAdd={onAdd}
+        addDisabled={addDisabled}
+        grouping={grouping}
+        onGroupingChange={onGroupingChange}
+        sort={sort}
+        onSortChange={onSortChange}
+      />
 
       <div
         className={cn(
@@ -254,6 +269,13 @@ export function TrackList({
  * artist header pt-8 (32px) pb-6 (24px); album header pt-5 (20px, first album
  * 0 — the artist header's bottom already spaces it) pb-3 (12px); track rows
  * py-1 (4px). */
+
+/** The shell re-renders on progress ticks, busy-count changes, panel resizes
+ * and dialog state — none of which reach the list. Every prop below is already
+ * a stable identity (memoized rows, useCallback handlers), so memo turns those
+ * into no-ops. `searchValue` still changes per keystroke, which is correct:
+ * the search field lives in here. */
+export const TrackList = memo(TrackListImpl);
 
 const SELECTION_ICONS = { all: CheckCircle2, some: CircleDashed, none: Circle } as const;
 

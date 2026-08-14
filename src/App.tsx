@@ -1,4 +1,6 @@
 import {
+  Suspense,
+  lazy,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -9,7 +11,7 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { LayoutGrid, Music, Plus, Usb } from "lucide-react";
+import { Music, Settings, Usb } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,24 +22,15 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { BulkEditPanel } from "@/components/BulkEditPanel";
 import { CapacityGauge } from "@/components/CapacityGauge";
 import { ImportDialog } from "@/components/ImportDialog";
 import { DisconnectedView } from "@/components/DisconnectedView";
+import { DrivePickerDialog } from "@/components/DrivePickerDialog";
 import { MountPickerDialog } from "@/components/MountPickerDialog";
+import { SettingsDialog } from "@/components/SettingsDialog";
 import { PermissionBanner, PermissionPrimer } from "@/components/PermissionPrimer";
 import { ProgressBanner } from "@/components/ProgressBanner";
-import { ConvertView } from "@/components/ConvertView";
-import { StatsView } from "@/components/StatsView";
 import { ViewTabs } from "@/components/ViewTabs";
 import { recordActivity } from "@/lib/activity";
 import { TrackEditPanel } from "@/components/TrackEditPanel";
@@ -61,7 +54,17 @@ import type {
   TrackGrouping,
   TrackSort,
 } from "@/lib/types";
-import { GROUPING_LABELS, SORT_LABELS } from "@/lib/types";
+
+// Split out of the entry chunk: neither tab is the default view, and together
+// they are the bulk of the UI code. Loading them on first visit also keeps
+// their mount-time work — Convert probes ffmpeg's build config, Stats fetches
+// a wall of covers — off the launch path entirely.
+const ConvertView = lazy(() =>
+  import("@/components/ConvertView").then((m) => ({ default: m.ConvertView })),
+);
+const StatsView = lazy(() =>
+  import("@/components/StatsView").then((m) => ({ default: m.StatsView })),
+);
 
 const EMPTY_SNAPSHOT: LibrarySnapshot = {
   mountPoint: null,
@@ -102,6 +105,8 @@ export default function App() {
   const [collapsedAlbums, setCollapsedAlbums] = useState<Set<string>>(new Set());
   const [showImporter, setShowImporter] = useState(false);
   const [showMountPicker, setShowMountPicker] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showDrivePicker, setShowDrivePicker] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
   const [detailWidth, setDetailWidth] = useState(440);
   const [view, setView] = useState<AppView>(() => {
@@ -114,6 +119,13 @@ export default function App() {
   /** Fraction of the running conversion, surfaced on the header tab so the
    * job stays visible from the Library tab. Null when nothing is running. */
   const [convertProgress, setConvertProgress] = useState<number | null>(null);
+  /** Convert mounts on first visit and stays mounted from then on — a running
+   * job's queue, log and event subscriptions must survive a tab switch. Stats
+   * has no such state and so is mounted only while visible. */
+  const [convertMounted, setConvertMounted] = useState(view === "convert");
+  useEffect(() => {
+    if (view === "convert") setConvertMounted(true);
+  }, [view]);
   const detailRef = useRef<HTMLDivElement>(null);
 
   // First-run TCC primer: shown once. Declining raises the quiet banner
@@ -153,11 +165,15 @@ export default function App() {
     localStorage.setItem("appView", view);
   }, [view]);
 
-  // ⌘1 / ⌘2 / ⌘3 switch tabs, the way a native app's View menu would.
+  // ⌘1 / ⌘2 / ⌘3 switch tabs, the way a native app's View menu would; ⌘,
+  // opens Settings, which every Mac app binds.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.altKey || e.ctrlKey) return;
-      if (e.key === "1") {
+      if (e.key === ",") {
+        e.preventDefault();
+        setShowSettings(true);
+      } else if (e.key === "1") {
         e.preventDefault();
         setView("library");
       } else if (e.key === "2") {
@@ -417,6 +433,13 @@ export default function App() {
     [toggleTracksSelection],
   );
 
+  const deselectAll = useCallback(() => setSelection(new Set()), []);
+
+  // useCallback'd rather than written inline at the call site: an inline arrow
+  // is a new identity on every App render, which is exactly what TrackList's
+  // memo exists to avoid.
+  const openImporter = useCallback(() => setShowImporter(true), []);
+
   const toggleGroup = useCallback((id: string) => {
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
@@ -490,17 +513,6 @@ export default function App() {
           >
             <Usb /> Connect
           </Button>
-          {view === "library" && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={!isOpen || busy}
-              title="Import MP3/M4A directly, or convert FLAC, WAV and other lossless files to Apple Lossless — or drag files and folders onto the track list"
-              onClick={() => setShowImporter(true)}
-            >
-              <Plus /> Add Songs
-            </Button>
-          )}
           <Button
             variant="ghost"
             size="sm"
@@ -510,48 +522,17 @@ export default function App() {
           >
             <EjectIcon /> Eject
           </Button>
-          {view === "library" && (
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  title="Group the track list by artist, album or genre, and choose its sort order"
-                >
-                  <LayoutGrid /> View
-                </Button>
-              }
-            />
-            {/* Each label lives INSIDE its radio group: Base UI's GroupLabel
-                reads group context and throws without one. */}
-            <DropdownMenuContent align="end">
-              <DropdownMenuRadioGroup
-                value={grouping}
-                onValueChange={(v) => setGrouping(v as TrackGrouping)}
-              >
-                <DropdownMenuLabel>Group By</DropdownMenuLabel>
-                {Object.entries(GROUPING_LABELS).map(([value, label]) => (
-                  <DropdownMenuRadioItem key={value} value={value}>
-                    {label}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-              <DropdownMenuSeparator />
-              <DropdownMenuRadioGroup
-                value={sort}
-                onValueChange={(v) => setSort(v as TrackSort)}
-              >
-                <DropdownMenuLabel>Sort By</DropdownMenuLabel>
-                {Object.entries(SORT_LABELS).map(([value, label]) => (
-                  <DropdownMenuRadioItem key={value} value={value}>
-                    {label}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          )}
+          {/* Outside the library-only block: the icon picker is app-wide and
+              should be reachable with no iPod attached. */}
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="Settings"
+            title="App settings (⌘,)"
+            onClick={() => setShowSettings(true)}
+          >
+            <Settings />
+          </Button>
         </div>
       </header>
 
@@ -578,6 +559,13 @@ export default function App() {
                 onToggleAlbumSelection={toggleAlbumSelection}
                 onToggleGroupSelection={toggleGroupSelection}
                 isDropTarget={isDropTarget}
+                onDeselectAll={deselectAll}
+                onAdd={openImporter}
+                addDisabled={!isOpen || busy}
+                grouping={grouping}
+                onGroupingChange={setGrouping}
+                sort={sort}
+                onSortChange={setSort}
               />
             </div>
 
@@ -669,19 +657,27 @@ export default function App() {
         )}
         </div>
 
-        {/* Kept mounted rather than conditionally rendered: switching tabs
-            mid-job must not discard the queue or the log. */}
-        <div className={`min-h-0 flex-1 ${view === "convert" ? "" : "hidden"}`}>
-          <ConvertView
-            ipodMount={snapshot.mountPoint}
-            onLibraryChanged={reloadLibrary}
-            onProgressChange={setConvertProgress}
-          />
-        </div>
+        {/* Hidden rather than unmounted once visited: switching tabs mid-job
+            must not discard the queue or the log. */}
+        {convertMounted && (
+          <div className={`min-h-0 flex-1 ${view === "convert" ? "" : "hidden"}`}>
+            <Suspense fallback={<TabLoading />}>
+              <ConvertView
+                ipodMount={snapshot.mountPoint}
+                onLibraryChanged={reloadLibrary}
+                onProgressChange={setConvertProgress}
+              />
+            </Suspense>
+          </div>
+        )}
 
-        <div className={`min-h-0 flex-1 ${view === "stats" ? "" : "hidden"}`}>
-          <StatsView tracks={snapshot.tracks} mountPoint={snapshot.mountPoint} />
-        </div>
+        {view === "stats" && (
+          <div className="min-h-0 flex-1">
+            <Suspense fallback={<TabLoading />}>
+              <StatsView tracks={snapshot.tracks} mountPoint={snapshot.mountPoint} />
+            </Suspense>
+          </div>
+        )}
 
         <ProgressBanner busy={busy} progress={progress} />
       </div>
@@ -692,17 +688,40 @@ export default function App() {
         onConnect={connect}
       />
 
+      <SettingsDialog open={showSettings} onOpenChange={setShowSettings} />
+
       <ImportDialog
         open={showImporter}
         onOpenChange={setShowImporter}
         onReadTags={readTags}
         onImport={importTracks}
+        onBrowseDrive={() => {
+          setShowImporter(false);
+          setShowDrivePicker(true);
+        }}
+      />
+
+      <DrivePickerDialog
+        open={showDrivePicker}
+        onOpenChange={setShowDrivePicker}
+        connectedMount={snapshot.mountPoint}
+        onImport={async (path) => {
+          // The same call a dropped folder makes, so a whole drive and a
+          // dragged folder cannot diverge in behaviour.
+          await run(api.importFiles([path])).then(handleImportResult);
+        }}
       />
 
       <ErrorDialog error={lastError} onDismiss={() => setLastError(null)} />
       {showPermPrimer && <PermissionPrimer onDecision={decidePermPrimer} />}
     </div>
   );
+}
+
+/** Placeholder while a tab's chunk loads. Deliberately blank: the chunk is on
+ * local disk and resolves in a frame or two, so a spinner would only flash. */
+function TabLoading() {
+  return <div className="h-full bg-background" />;
 }
 
 /** macOS TCC blocks reads from removable volumes ("Operation not
