@@ -2,7 +2,7 @@
 name = "platter-tauri"
 version = "0.1.0"
 description = "Platter — iPod library manager"
-authors = ["you"]
+authors = ["Ilia Kolebaev"]
 edition = "2021"
 
 [lib]
@@ -20,6 +20,11 @@ pkg-config = "0.3"
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+# System notifications for long operations finishing in the background, and a
+# rotating log file under ~/Library/Logs — the artifact a bug report attaches.
+tauri-plugin-notification = "2"
+tauri-plugin-log = "2"
+log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 lofty = "0.22"
@@ -47,7 +52,10 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["NSD
 [profile.release]
 lto = true
 codegen-units = 1
-strip = true
+# Keep the symbol table (drop only debuginfo): with panic = "abort" a crash on
+# a user's machine produces a macOS crash report, and symbol names are the
+# difference between a fixable report and line noise. Costs ~1 MB.
+strip = "debuginfo"
 panic = "abort"
 opt-level = 3
 

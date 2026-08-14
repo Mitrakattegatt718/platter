@@ -10,15 +10,52 @@ pub mod library;
 mod settings;
 mod tags;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // With panic = "abort" and stripped release binaries, a crash on a user's
+    // machine otherwise leaves nothing to report a bug with. The hook writes
+    // the panic (and its location) through the log file before the abort.
+    std::panic::set_hook(Box::new(|info| {
+        log::error!("panic: {info}");
+        eprintln!("panic: {info}");
+    }));
+
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    // ~/Library/Logs/<bundle-id>/platter.log — the file a bug
+                    // report can actually attach.
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("platter".into()),
+                    }),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stderr),
+                ])
+                .level(log::LevelFilter::Info)
+                .max_file_size(2 * 1024 * 1024)
+                .build(),
+        )
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(library::new_shared())
         .manage(convert_job::new_queue())
         .setup(|app| {
+            // Background saves report through a Tauri event: a failed
+            // auto-flush is unsaved edits the user believes are on the
+            // device, and the flush thread has no other voice.
+            {
+                let handle = app.handle().clone();
+                let lib = app.state::<library::SharedLibrary>();
+                lib.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set_error_notifier(std::sync::Arc::new(move |msg: &str| {
+                        log::error!("library flush failed: {msg}");
+                        let _ = handle.emit("library:flush-failed", msg.to_string());
+                    }));
+            }
+
             // Re-apply the stored Dock icon here rather than from the
             // frontend: the swap is runtime-only, and waiting for the webview
             // to boot would flash the default icon on every single launch.
@@ -27,7 +64,7 @@ pub fn run() {
                     // A stored id that this build no longer ships must not be
                     // fatal — fall back to the bundle icon and forget it, so
                     // the failure doesn't repeat at every launch.
-                    eprintln!("app icon: {e}");
+                    log::warn!("app icon: {e}");
                     let mut stored = settings::load(app.handle());
                     stored.app_icon = None;
                     let _ = settings::save(app.handle(), &stored);
@@ -63,7 +100,12 @@ pub fn run() {
                         // Poison must not turn a quit into a panic: the edits
                         // are still worth writing.
                         let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
-                        let _ = lib.flush_if_dirty();
+                        if let Err(msg) = lib.flush_if_dirty() {
+                            // The window is going away, so a toast can't be
+                            // seen — the log file is what's left to explain a
+                            // missing edit.
+                            log::error!("flush on close failed: {msg}");
+                        }
                     }
                     let _ = window.destroy();
                 });
@@ -81,6 +123,7 @@ pub fn run() {
             commands::get_app_icon,
             commands::set_app_icon,
             commands::read_tags,
+            commands::set_fields,
             commands::import_tracks,
             commands::import_files,
             commands::update_track,
