@@ -590,6 +590,50 @@ mod tests {
         }
     }
 
+    fn work(name: &str) -> WorkItem {
+        WorkItem {
+            src: PathBuf::from(format!("/music/{name}.flac")),
+            dst_stem: name.into(),
+            cue: None,
+            probe: None,
+        }
+    }
+
+    /// Staging is what puts a row on screen, and the ids it hands out are what
+    /// per-item status events are addressed to — so both must survive a run
+    /// being taken from the queue.
+    #[test]
+    fn staged_rows_keep_the_ids_the_batch_is_addressed_by() {
+        let mut q = Queue::default();
+        let fresh = q.fresh_of(vec![work("a"), work("b")]);
+        assert_eq!(fresh.len(), 2, "an empty queue rejects nothing");
+        let probed = fresh
+            .iter()
+            .map(|_| Some((probe(60.0, 44100, 2), 1_000_000)))
+            .collect();
+        q.insert_probed(fresh, probed);
+
+        let rows = q.rows(None);
+        assert_eq!(rows.len(), 2, "both files must show up in the list");
+        assert_eq!(rows[0].display, "a.flac");
+
+        let (ids, work) = take_work(&mut q);
+        assert_eq!(ids, rows.iter().map(|r| r.id).collect::<Vec<_>>());
+        assert_eq!(work.len(), ids.len(), "ids index-align with the batch");
+        assert_eq!(q.rows(None).len(), 2, "a run does not empty the list");
+    }
+
+    /// A file already queued must not be staged twice — the second add would
+    /// otherwise get its own id and convert the same source again.
+    #[test]
+    fn adding_the_same_file_twice_stages_it_once() {
+        let mut q = Queue::default();
+        let fresh = q.fresh_of(vec![work("a")]);
+        q.insert_probed(fresh, vec![Some((probe(60.0, 44100, 2), 1))]);
+        assert!(q.fresh_of(vec![work("a")]).is_empty());
+        assert_eq!(q.rows(None).len(), 1);
+    }
+
     #[test]
     fn pcm_targets_are_arithmetic() {
         let p = probe(60.0, 44100, 2);
