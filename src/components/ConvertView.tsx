@@ -20,6 +20,8 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
 import { formatBytes, formatDuration } from "@/lib/format";
+import { notifyIfBackground } from "@/lib/notify";
+import { toastError } from "@/lib/toast";
 import type {
   ConvertItemBatch,
   ConvertItemStatus,
@@ -98,7 +100,10 @@ function ConvertViewImpl({
   }, [destKind, ipodMount, folder]);
 
   useEffect(() => {
-    api.convertFormats().then(setFormats).catch(() => {});
+    api
+      .convertFormats()
+      .then(setFormats)
+      .catch((e) => toastError("Couldn't probe the bundled ffmpeg", String(e)));
   }, []);
 
   // No iPod attached means the device destination is not offered at all,
@@ -154,12 +159,29 @@ function ConvertViewImpl({
       setProgress(null);
       onProgressChange(null);
       if (destKind === "ipod" && !e.payload.cancelled) onLibraryChanged();
+      if (!e.payload.cancelled) {
+        void notifyIfBackground(
+          e.payload.failed > 0 ? "Conversion finished with problems" : "Conversion finished",
+          `${e.payload.converted} converted${e.payload.failed > 0 ? `, ${e.payload.failed} failed` : ""}.`,
+        );
+      }
     });
+    // A dead convert:done subscription strands the UI at running=true with no
+    // way out — that one failing is worth a loud error, not a console line.
+    unlistenDone.catch((e) =>
+      toastError(
+        "Conversion updates unavailable",
+        `Job events couldn't be subscribed; restart the app before converting. ${String(e)}`,
+      ),
+    );
+    for (const p of [unlistenProgress, unlistenLog, unlistenItems]) {
+      p.catch((e) => console.error("convert event subscription failed:", e));
+    }
     return () => {
-      unlistenProgress.then((f) => f());
-      unlistenLog.then((f) => f());
-      unlistenItems.then((f) => f());
-      unlistenDone.then((f) => f());
+      unlistenProgress.then((f) => f(), () => {});
+      unlistenLog.then((f) => f(), () => {});
+      unlistenItems.then((f) => f(), () => {});
+      unlistenDone.then((f) => f(), () => {});
     };
   }, [destKind, onLibraryChanged, onProgressChange]);
 
@@ -225,12 +247,22 @@ function ConvertViewImpl({
 
   // Stable identities: SourceList rows are memoized, and these callbacks are
   // their only props besides the row — an inline lambda would defeat it.
+  // Both surface failure: a silently rejected remove leaves the row visible
+  // and the click looking ignored.
   const removeRow = useCallback(async (id: number) => {
-    setRows(await api.convertRemove([id]));
+    try {
+      setRows(await api.convertRemove([id]));
+    } catch (e) {
+      toastError("Couldn't remove the file", String(e));
+    }
   }, []);
   const clearRows = useCallback(async () => {
-    setRows(await api.convertClear());
-    setStatuses(new Map());
+    try {
+      setRows(await api.convertClear());
+      setStatuses(new Map());
+    } catch (e) {
+      toastError("Couldn't clear the queue", String(e));
+    }
   }, []);
 
   const chosen = formats.find((f) => f.format === format);

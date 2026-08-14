@@ -94,6 +94,7 @@ export function DisconnectedView({
 }) {
   const [volumes, setVolumes] = useState<VolumeInfo[] | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
   const [connectingPath, setConnectingPath] = useState<string | null>(null);
   const connectingRef = useRef<string | null>(null);
 
@@ -101,8 +102,17 @@ export function DisconnectedView({
     if (!silent) setScanning(true);
     api
       .listVolumes()
-      .then(setVolumes)
-      .catch(() => setVolumes([]))
+      .then((next) => {
+        setVolumes(next);
+        setScanError(null);
+      })
+      // "Couldn't scan" and "no volumes" are different answers — showing the
+      // empty state for a TCC denial sends the user hunting for a cable
+      // problem that doesn't exist.
+      .catch((e) => {
+        setScanError(String(e));
+        setVolumes((prev) => prev ?? []);
+      })
       .finally(() => {
         if (!silent) setScanning(false);
       });
@@ -173,6 +183,13 @@ export function DisconnectedView({
             </Button>
           </div>
 
+          {scanError !== null && (
+            <div className="shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+              Couldn't scan drives: {scanError}
+              {scanError.includes("Operation not permitted") &&
+                " — grant Platter access under Privacy & Security → Files & Folders → Removable Volumes."}
+            </div>
+          )}
           {showSkeleton ? (
             <ScanSkeleton />
           ) : showEmpty ? (

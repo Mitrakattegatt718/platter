@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { api } from "@/lib/api";
+import { toastError } from "@/lib/toast";
 import { partitionVolumes, volumeCapacity, volumeLabel, volumeSubtitle } from "@/lib/volumes";
 import type { VolumeInfo } from "@/lib/types";
 
@@ -56,7 +57,9 @@ export function DriveSelect({
     api
       .listVolumes()
       .then((next) => alive && setVolumes(next))
-      .catch(() => alive && setVolumes([]));
+      // Keep whatever list we had: replacing it with [] on a transient
+      // failure would read as "your iPod vanished".
+      .catch((e) => alive && toastError("Couldn't scan drives", String(e)));
     return () => {
       alive = false;
     };

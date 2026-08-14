@@ -11,6 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
+import { toastError } from "@/lib/toast";
 import type { VolumeInfo, VolumeScan } from "@/lib/types";
 
 /** Import everything from a mounted drive — a USB stick, an SD card, another
@@ -39,7 +40,10 @@ export function DrivePickerDialog({
     if (!open) return;
     setSelected(null);
     setScan(null);
-    api.listVolumes().then(setVolumes).catch(() => setVolumes([]));
+    api.listVolumes().then(setVolumes).catch((e) => {
+      setVolumes([]);
+      toastError("Couldn't scan drives", String(e));
+    });
   }, [open]);
 
   async function choose(path: string) {
@@ -53,8 +57,9 @@ export function DrivePickerDialog({
         if (current === path) setScan(result);
         return current;
       });
-    } catch {
+    } catch (e) {
       setScan(null);
+      toastError("Couldn't scan the drive", String(e));
     } finally {
       setScanning(false);
     }
