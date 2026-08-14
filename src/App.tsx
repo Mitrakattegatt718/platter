@@ -11,7 +11,7 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Music, Settings, Usb } from "lucide-react";
+import { Music, Settings } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,6 +26,7 @@ import { BulkEditPanel } from "@/components/BulkEditPanel";
 import { CapacityGauge } from "@/components/CapacityGauge";
 import { ImportDialog } from "@/components/ImportDialog";
 import { DisconnectedView } from "@/components/DisconnectedView";
+import { DriveSelect } from "@/components/DriveSelect";
 import { DrivePickerDialog } from "@/components/DrivePickerDialog";
 import { MountPickerDialog } from "@/components/MountPickerDialog";
 import { SettingsDialog } from "@/components/SettingsDialog";
@@ -71,15 +72,6 @@ const EMPTY_SNAPSHOT: LibrarySnapshot = {
   tracks: [],
   capacity: null,
 };
-
-function EjectIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="size-4">
-      <path d="M5 13 L12 5 L19 13 Z" strokeLinejoin="round" />
-      <line x1="5" y1="18" x2="19" y2="18" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 export default function App() {
   const [snapshot, setSnapshot] = useState<LibrarySnapshot>(EMPTY_SNAPSHOT);
@@ -494,36 +486,28 @@ export default function App() {
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
-      {/* The tools row is always present now: converting to a folder on the
-          Mac is a legitimate use with no iPod attached. Library-specific
-          chrome inside it still appears only once a library is open. */}
-      <header className="flex h-13 shrink-0 items-center gap-3 border-b px-4">
+      {/* The tools row is always present: converting to a folder on the Mac is
+          a legitimate use with no iPod attached, and everything left in here
+          is app-wide, so switching tabs no longer reflows the row.
+
+          Three grid columns, not a flex row with a spacer: the left zone's
+          width moves (volume name, and "42 GB free" after every import) and a
+          flex layout would walk the centered tabs sideways as it did. */}
+      <header className="grid h-13 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b px-4">
+        <div className="flex min-w-0 items-center gap-1">
+          <DriveSelect
+            mountPoint={snapshot.mountPoint}
+            busy={busy}
+            onConnect={connect}
+            onEject={eject}
+            onConnectManually={() => setShowMountPicker(true)}
+          />
+          {isOpen && <CapacityGauge capacity={snapshot.capacity} />}
+        </div>
+
         <ViewTabs view={view} onChange={setView} convertProgress={convertProgress} />
-        <span className="font-mono text-sm font-semibold">
-          {snapshot.mountPoint ? `iPod (${snapshot.mountPoint})` : "PodSync"}
-        </span>
-        {isOpen && <CapacityGauge capacity={snapshot.capacity} />}
-        <div className="flex-1" />
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            title="Choose the mounted iPod volume to open"
-            onClick={() => setShowMountPicker(true)}
-          >
-            <Usb /> Connect
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!isOpen || busy}
-            title="Disconnect and eject the iPod so you can safely unplug it"
-            onClick={eject}
-          >
-            <EjectIcon /> Eject
-          </Button>
-          {/* Outside the library-only block: the icon picker is app-wide and
-              should be reachable with no iPod attached. */}
+
+        <div className="flex items-center justify-end gap-1">
           <Button
             variant="ghost"
             size="sm"
