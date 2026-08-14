@@ -80,6 +80,12 @@ a hand-written C bridge. macOS only.
   the script deletes them, this app is macOS only. The icns encoder is not
   byte-reproducible, so `icon.icns` shows up modified after every run even when
   the pixels are identical.
+- The dylibs on **this machine** (libgpod at `~/.local`, Homebrew GLib chain,
+  Homebrew ffmpeg) carry `LC_BUILD_VERSION minos 26.0` — built without
+  `MACOSX_DEPLOYMENT_TARGET`. `bundle-dylibs.sh` fails a bundle whose Mach-Os
+  require a newer macOS than tauri.conf.json's `minimumSystemVersion` (14.0);
+  local bundles need `ALLOW_MINOS_MISMATCH=1` until the deps are rebuilt with
+  the target pinned. The release workflow builds everything pinned.
 - macOS has **no alternate-app-icon API**. `NSApplication`'s
   `applicationIconImage` swaps the Dock tile and nothing else; Finder,
   Launchpad and Spotlight follow `Contents/Resources/icon.icns`, and rewriting
