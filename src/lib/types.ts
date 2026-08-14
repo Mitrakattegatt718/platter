@@ -220,6 +220,30 @@ export interface ConvertLogBatch {
   lines: ConvertLogLine[];
 }
 
+/** Where one queued row is in the run. "queued" is never sent — it is what a
+ * row with no update yet means while a job is running. */
+export type ConvertItemStatus =
+  | "queued"
+  | "converting"
+  | "converted"
+  | "importing"
+  | "imported"
+  | "failed"
+  | "cancelled";
+
+export interface ConvertItemUpdate {
+  /** SourceRow.id this update is about. */
+  id: number;
+  status: ConvertItemStatus;
+  /** Failure reason, or null. */
+  detail: string | null;
+}
+
+export interface ConvertItemBatch {
+  jobId: number;
+  updates: ConvertItemUpdate[];
+}
+
 export type AppView = "library" | "convert" | "stats";
 
 export type TrackGrouping = "none" | "artist" | "album" | "genre";

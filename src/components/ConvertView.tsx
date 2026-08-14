@@ -4,11 +4,15 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   AlertTriangle,
+  Check,
   ChevronRight,
+  Clock,
   FolderOpen,
   Loader2,
+  MinusCircle,
   Music2,
   Smartphone,
+  Upload,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -17,6 +21,9 @@ import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
 import { formatBytes, formatDuration } from "@/lib/format";
 import type {
+  ConvertItemBatch,
+  ConvertItemStatus,
+  ConvertItemUpdate,
   ConvertLogBatch,
   ConvertLogLine,
   ConvertProgress,
@@ -71,6 +78,9 @@ export function ConvertView({
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<ConvertProgress | null>(null);
   const [log, setLog] = useState<ConvertLogLine[]>([]);
+  /** Per-row job status, keyed by SourceRow.id. Kept beside the rows rather
+   * than on them: an estimate refresh replaces the whole row list mid-job. */
+  const [statuses, setStatuses] = useState<Map<number, ConvertItemUpdate>>(new Map());
   const [logOpen, setLogOpen] = useState(false);
   const [summary, setSummary] = useState<JobSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -131,6 +141,13 @@ export function ConvertView({
         return next.length > MAX_LOG_LINES ? next.slice(next.length - MAX_LOG_LINES) : next;
       });
     });
+    const unlistenItems = listen<ConvertItemBatch>("convert:items", (e) => {
+      setStatuses((prev) => {
+        const next = new Map(prev);
+        for (const update of e.payload.updates) next.set(update.id, update);
+        return next;
+      });
+    });
     const unlistenDone = listen<JobSummary>("convert:done", (e) => {
       setSummary(e.payload);
       setRunning(false);
@@ -141,6 +158,7 @@ export function ConvertView({
     return () => {
       unlistenProgress.then((f) => f());
       unlistenLog.then((f) => f());
+      unlistenItems.then((f) => f());
       unlistenDone.then((f) => f());
     };
   }, [destKind, onLibraryChanged, onProgressChange]);
@@ -193,6 +211,7 @@ export function ConvertView({
     setRunning(true);
     setSummary(null);
     setLog([]);
+    setStatuses(new Map());
     setError(null);
     setLogOpen(true);
     try {
@@ -211,6 +230,7 @@ export function ConvertView({
   }, []);
   const clearRows = useCallback(async () => {
     setRows(await api.convertClear());
+    setStatuses(new Map());
   }, []);
 
   const chosen = formats.find((f) => f.format === format);
@@ -239,6 +259,8 @@ export function ConvertView({
         <SourceList
           rows={rows}
           adding={adding}
+          running={running}
+          statuses={statuses}
           onAddFiles={addFiles}
           onAddFolder={addFolder}
           onRemove={removeRow}
@@ -449,6 +471,8 @@ function DestRow({
 function SourceList({
   rows,
   adding,
+  running,
+  statuses,
   onAddFiles,
   onAddFolder,
   onRemove,
@@ -456,6 +480,9 @@ function SourceList({
 }: {
   rows: SourceRow[];
   adding: boolean;
+  /** Staging the queue is locked while a job reads from it. */
+  running: boolean;
+  statuses: Map<number, ConvertItemUpdate>;
   onAddFiles: () => void;
   onAddFolder: () => void;
   onRemove: (id: number) => void;
@@ -464,10 +491,20 @@ function SourceList({
   return (
     <div className="flex min-w-0 flex-1 flex-col">
       <div className="flex items-center gap-2 border-b px-3 py-2">
-        <Button variant="outline" size="sm" onClick={onAddFiles} disabled={adding}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onAddFiles}
+          disabled={adding || running}
+        >
           Add Files…
         </Button>
-        <Button variant="outline" size="sm" onClick={onAddFolder} disabled={adding}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onAddFolder}
+          disabled={adding || running}
+        >
           Add Folder…
         </Button>
         <div className="flex-1" />
@@ -480,7 +517,8 @@ function SourceList({
             <button
               type="button"
               onClick={onClear}
-              className="text-xs text-muted-foreground hover:text-foreground"
+              disabled={running}
+              className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:hover:text-muted-foreground"
             >
               Clear
             </button>
@@ -499,7 +537,12 @@ function SourceList({
           </p>
         </div>
       ) : (
-        <SourcesVirtualized rows={rows} onRemove={onRemove} />
+        <SourcesVirtualized
+          rows={rows}
+          running={running}
+          statuses={statuses}
+          onRemove={onRemove}
+        />
       )}
     </div>
   );
@@ -510,9 +553,13 @@ function SourceList({
  * are virtualized and memoized rather than rendered in full each time. */
 function SourcesVirtualized({
   rows,
+  running,
+  statuses,
   onRemove,
 }: {
   rows: SourceRow[];
+  running: boolean;
+  statuses: Map<number, ConvertItemUpdate>;
   onRemove: (id: number) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -534,7 +581,13 @@ function SourcesVirtualized({
             className="absolute top-0 left-0 w-full"
             style={{ transform: `translateY(${item.start}px)` }}
           >
-            <SourceRowView row={rows[item.index]} onRemove={onRemove} />
+            <SourceRowView
+              row={rows[item.index]}
+              // A row a running job hasn't reached yet is waiting, not idle.
+              status={statuses.get(rows[item.index].id) ?? (running ? QUEUED : null)}
+              running={running}
+              onRemove={onRemove}
+            />
           </div>
         ))}
       </div>
@@ -542,17 +595,58 @@ function SourcesVirtualized({
   );
 }
 
+/** Stable identity: a memoized row must not re-render just because the parent
+ * rebuilt this placeholder. */
+const QUEUED: ConvertItemUpdate = { id: 0, status: "queued", detail: null };
+
+const STATUS_COPY: Record<ConvertItemStatus, { text: string; tone: string }> = {
+  queued: { text: "Waiting", tone: "text-muted-foreground" },
+  converting: { text: "Converting", tone: "text-foreground" },
+  converted: { text: "Converted", tone: "text-muted-foreground" },
+  importing: { text: "Copying", tone: "text-foreground" },
+  imported: { text: "On iPod", tone: "text-muted-foreground" },
+  failed: { text: "Failed", tone: "text-destructive" },
+  cancelled: { text: "Cancelled", tone: "text-muted-foreground" },
+};
+
+function StatusIcon({ status }: { status: ConvertItemStatus }) {
+  switch (status) {
+    case "queued":
+      return <Clock className="size-3 shrink-0" />;
+    case "converting":
+      return <Loader2 className="size-3 shrink-0 animate-spin" />;
+    case "importing":
+      return <Upload className="size-3 shrink-0 animate-pulse" />;
+    case "converted":
+    case "imported":
+      return <Check className="size-3 shrink-0" />;
+    case "failed":
+      return <AlertTriangle className="size-3 shrink-0" />;
+    case "cancelled":
+      return <MinusCircle className="size-3 shrink-0" />;
+  }
+}
+
 const SourceRowView = memo(function SourceRowView({
   row,
+  status,
+  running,
   onRemove,
 }: {
   row: SourceRow;
+  /** Null when no job has touched this row. */
+  status: ConvertItemUpdate | null;
+  running: boolean;
   onRemove: (id: number) => void;
 }) {
+  // A row the target rejects never enters the batch, so it outranks the
+  // job's own "waiting" — it is not waiting for anything.
+  const skipped = row.blocked !== null;
+  const copy = status && !skipped ? STATUS_COPY[status.status] : null;
   return (
     <div
       className={cn(
-        "grid grid-cols-[minmax(0,1fr)_90px_90px_70px_24px] items-center gap-2 border-b px-3 py-1.5 text-xs",
+        "grid grid-cols-[minmax(0,1fr)_92px_78px_74px_62px_24px] items-center gap-2 border-b px-3 py-1.5 text-xs",
         row.blocked && "opacity-60",
       )}
     >
@@ -567,6 +661,22 @@ const SourceRowView = memo(function SourceRowView({
           </span>
         )}
       </div>
+      {skipped ? (
+        <span className="flex items-center gap-1 truncate text-amber-600 dark:text-amber-500">
+          <MinusCircle className="size-3 shrink-0" />
+          Skipped
+        </span>
+      ) : status && copy ? (
+        <span
+          className={cn("flex items-center gap-1 truncate", copy.tone)}
+          title={status.detail ?? undefined}
+        >
+          <StatusIcon status={status.status} />
+          {copy.text}
+        </span>
+      ) : (
+        <span />
+      )}
       <span className="truncate text-muted-foreground">{row.codec}</span>
       <span className="tabular-nums text-muted-foreground">
         {row.sampleRate > 0 ? `${(row.sampleRate / 1000).toFixed(1)} kHz` : "—"}
@@ -577,7 +687,8 @@ const SourceRowView = memo(function SourceRowView({
       <button
         type="button"
         onClick={() => onRemove(row.id)}
-        className="text-muted-foreground hover:text-foreground"
+        disabled={running}
+        className="text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:hover:text-muted-foreground"
         aria-label={`Remove ${row.display}`}
       >
         <X className="size-3.5" />
