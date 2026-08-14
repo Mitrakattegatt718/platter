@@ -44,6 +44,11 @@ fn main() {
         "cargo:rerun-if-changed={}",
         bridging.join("GpodBridge.h").display()
     );
+    // Both feed the pkg-config search path above, so a build that does not
+    // re-run on their change silently keeps linking against the old prefix.
+    println!("cargo:rerun-if-env-changed=LIBGPOD_PREFIX");
+    println!("cargo:rerun-if-env-changed=BREW_PREFIX");
+    println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
 
     tauri_build::build()
 }

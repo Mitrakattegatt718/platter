@@ -14,8 +14,8 @@
 
 // libgpod stores has_artwork as a raw guint8: 0x01 = yes, 0x02 = no.
 // 0x00 (uninitialized) causes the Classic to silently drop the track.
-#define PODSYNC_HAS_ARTWORK_YES 0x01
-#define PODSYNC_HAS_ARTWORK_NO  0x02
+#define PLATTER_HAS_ARTWORK_YES 0x01
+#define PLATTER_HAS_ARTWORK_NO  0x02
 
 static char* dup_gerror(GError* err) {
     if (!err) return strdup("Unknown error");
@@ -60,19 +60,40 @@ GpodDBRef gpod_open(const char* mountpoint, char** errOut) {
     return (GpodDBRef)itdb;
 }
 
+// Defined further down, next to the model-table logic it shares with
+// gpod_probe_device; declared here because gpod_write is the earlier of the
+// two callers.
+static int db_needs_shuffle_write(Itdb_iTunesDB* itdb);
+
 int gpod_write(GpodDBRef dbRef, char** errOut) {
     Itdb_iTunesDB* itdb = (Itdb_iTunesDB*)dbRef;
     int n = (int)g_list_length(itdb->tracks);
     const char* mp = itdb_get_mountpoint(itdb);
-    fprintf(stderr, "[podsync] gpod_write: %d tracks, mountpoint=%s\n", n, mp ? mp : "(null)");
+    fprintf(stderr, "[platter] gpod_write: %d tracks, mountpoint=%s\n", n, mp ? mp : "(null)");
     GError* error = NULL;
     gboolean ok = itdb_write(itdb, &error);
     if (!ok) {
-        fprintf(stderr, "[podsync] itdb_write FAILED: %s\n", error ? error->message : "unknown");
+        fprintf(stderr, "[platter] itdb_write FAILED: %s\n", error ? error->message : "unknown");
         if (errOut) *errOut = dup_gerror(error);
         return 0;
     }
-    fprintf(stderr, "[podsync] itdb_write OK\n");
+    fprintf(stderr, "[platter] itdb_write OK\n");
+
+    // A Shuffle's firmware never reads the iTunesDB we just wrote — it plays
+    // what iTunesSD lists. Skipping this leaves the app looking like it saved
+    // while the device shows nothing changed, which is worse than an error, so
+    // a failure here fails the whole write.
+    if (db_needs_shuffle_write(itdb)) {
+        GError* sdError = NULL;
+        if (!itdb_shuffle_write(itdb, &sdError)) {
+            fprintf(stderr, "[platter] itdb_shuffle_write FAILED: %s\n",
+                    sdError ? sdError->message : "unknown");
+            if (errOut) *errOut = dup_gerror(sdError);
+            else if (sdError) g_error_free(sdError);
+            return 0;
+        }
+        fprintf(stderr, "[platter] itdb_shuffle_write OK (iTunesSD)\n");
+    }
     return 1;
 }
 
@@ -107,7 +128,7 @@ static void fill_info(Itdb_Track* tr, GpodTrackInfo* out) {
     out->size_bytes = (long long)tr->size;
     // libgpod already converts the DB's Mac-epoch timestamps to host time_t.
     out->time_added = (long long)tr->time_added;
-    out->has_artwork = (tr->has_artwork == PODSYNC_HAS_ARTWORK_YES) ? 1 : 0;
+    out->has_artwork = (tr->has_artwork == PLATTER_HAS_ARTWORK_YES) ? 1 : 0;
     out->playcount = (int)tr->playcount;
     out->rating = (int)tr->rating;
     out->time_played = (long long)tr->time_played;
@@ -220,7 +241,7 @@ GpodTrackRef gpod_import_track(GpodDBRef dbRef,
     track->mediatype = ITDB_MEDIATYPE_AUDIO;
     // The Classic silently drops tracks with has_artwork=0x00 (unknown).
     // Set to 0x02 (no) — gpod_set_track_artwork flips it to 0x01 if art is added.
-    track->has_artwork = PODSYNC_HAS_ARTWORK_NO;
+    track->has_artwork = PLATTER_HAS_ARTWORK_NO;
     // Stamped here rather than left to libgpod so "Recently Added" ordering
     // is meaningful for tracks this app puts on the device.
     track->time_added = time(NULL);
@@ -229,7 +250,7 @@ GpodTrackRef gpod_import_track(GpodDBRef dbRef,
 
     Itdb_Playlist* mpl = itdb_playlist_mpl(itdb);
     if (!mpl) {
-        fprintf(stderr, "[podsync] WARNING: no master playlist — track will not appear in iPod Music menu\n");
+        fprintf(stderr, "[platter] WARNING: no master playlist — track will not appear in iPod Music menu\n");
     } else {
         itdb_playlist_add_track(mpl, track, -1);
     }
@@ -237,7 +258,7 @@ GpodTrackRef gpod_import_track(GpodDBRef dbRef,
     GError* error = NULL;
     if (!itdb_cp_track_to_ipod(track, sourceFilePath, &error)) {
         if (errOut) *errOut = dup_gerror(error);
-        fprintf(stderr, "[podsync] itdb_cp_track_to_ipod FAILED for %s\n", sourceFilePath);
+        fprintf(stderr, "[platter] itdb_cp_track_to_ipod FAILED for %s\n", sourceFilePath);
         // itdb_track_unlink only removes from the track GList, not from
         // playlists — remove from the MPL first to avoid a dangling
         // reference that would corrupt the iTunesDB on the next write.
@@ -247,7 +268,7 @@ GpodTrackRef gpod_import_track(GpodDBRef dbRef,
         return NULL;
     }
 
-    fprintf(stderr, "[podsync] imported OK: \"%s\" -> ipod_path=%s transferred=%d size=%u\n",
+    fprintf(stderr, "[platter] imported OK: \"%s\" -> ipod_path=%s transferred=%d size=%u\n",
             track->title, track->ipod_path ? track->ipod_path : "(null)",
             track->transferred, track->size);
 
@@ -288,6 +309,167 @@ int gpod_update_track_metadata(GpodDBRef dbRef,
     return 1;
 }
 
+// The colour variants are noise for anything that has to decide "can this app
+// manage the device": a Silver and a Black Classic behave identically, while a
+// Shuffle and a Classic do not. Collapsing them here keeps that knowledge next
+// to the libgpod enum instead of scattering a match over 43 constants in Rust.
+static const char* family_slug(Itdb_IpodModel model) {
+    switch (model) {
+        case ITDB_IPOD_MODEL_CLASSIC_SILVER:
+        case ITDB_IPOD_MODEL_CLASSIC_BLACK:
+            return "classic";
+        case ITDB_IPOD_MODEL_SHUFFLE:
+        case ITDB_IPOD_MODEL_SHUFFLE_SILVER:
+        case ITDB_IPOD_MODEL_SHUFFLE_PINK:
+        case ITDB_IPOD_MODEL_SHUFFLE_BLUE:
+        case ITDB_IPOD_MODEL_SHUFFLE_GREEN:
+        case ITDB_IPOD_MODEL_SHUFFLE_ORANGE:
+        case ITDB_IPOD_MODEL_SHUFFLE_PURPLE:
+        case ITDB_IPOD_MODEL_SHUFFLE_RED:
+        case ITDB_IPOD_MODEL_SHUFFLE_BLACK:
+        case ITDB_IPOD_MODEL_SHUFFLE_GOLD:
+        case ITDB_IPOD_MODEL_SHUFFLE_STAINLESS:
+            return "shuffle";
+        case ITDB_IPOD_MODEL_NANO_WHITE:
+        case ITDB_IPOD_MODEL_NANO_BLACK:
+        case ITDB_IPOD_MODEL_NANO_SILVER:
+        case ITDB_IPOD_MODEL_NANO_BLUE:
+        case ITDB_IPOD_MODEL_NANO_GREEN:
+        case ITDB_IPOD_MODEL_NANO_PINK:
+        case ITDB_IPOD_MODEL_NANO_RED:
+        case ITDB_IPOD_MODEL_NANO_YELLOW:
+        case ITDB_IPOD_MODEL_NANO_PURPLE:
+        case ITDB_IPOD_MODEL_NANO_ORANGE:
+            return "nano";
+        case ITDB_IPOD_MODEL_MINI:
+        case ITDB_IPOD_MODEL_MINI_BLUE:
+        case ITDB_IPOD_MODEL_MINI_PINK:
+        case ITDB_IPOD_MODEL_MINI_GREEN:
+        case ITDB_IPOD_MODEL_MINI_GOLD:
+            return "mini";
+        case ITDB_IPOD_MODEL_VIDEO_WHITE:
+        case ITDB_IPOD_MODEL_VIDEO_BLACK:
+        case ITDB_IPOD_MODEL_VIDEO_U2:
+            return "video";
+        case ITDB_IPOD_MODEL_COLOR:
+        case ITDB_IPOD_MODEL_COLOR_U2:
+            return "color";
+        case ITDB_IPOD_MODEL_REGULAR:
+        case ITDB_IPOD_MODEL_REGULAR_U2:
+            return "regular";
+        case ITDB_IPOD_MODEL_TOUCH_SILVER:
+            return "touch";
+        case ITDB_IPOD_MODEL_IPHONE_1:
+        case ITDB_IPOD_MODEL_IPHONE_WHITE:
+        case ITDB_IPOD_MODEL_IPHONE_BLACK:
+            return "iphone";
+        case ITDB_IPOD_MODEL_IPAD:
+            return "ipad";
+        case ITDB_IPOD_MODEL_MOBILE_1:
+            return "mobile";
+        default:
+            return "unknown";
+    }
+}
+
+// A Shuffle's firmware reads iTunesSD, not iTunesDB — libgpod writes that
+// format with itdb_shuffle_write(). Only the 1st/2nd generation layout, though:
+// the 3rd and 4th moved to a different iTunesSD with VoiceOver, which this
+// libgpod does not produce, so claiming support there would write a file the
+// device quietly ignores.
+static int shuffle_needs_itunes_sd(Itdb_IpodGeneration generation) {
+    return generation == ITDB_IPOD_GENERATION_SHUFFLE_1
+        || generation == ITDB_IPOD_GENERATION_SHUFFLE_2;
+}
+
+// The single place that decides whether this app can manage a device. Lives
+// here rather than in Rust because the answer is a property of the libgpod
+// enums right above it, and because gpod_write has to agree with it exactly.
+static int can_manage(const Itdb_IpodInfo* info) {
+    switch (info->ipod_model) {
+        // No iTunesDB at all: iOS devices keep an SQLite media library that
+        // libgpod cannot read or write, and never mount as a disk anyway.
+        case ITDB_IPOD_MODEL_TOUCH_SILVER:
+        case ITDB_IPOD_MODEL_IPHONE_1:
+        case ITDB_IPOD_MODEL_IPHONE_WHITE:
+        case ITDB_IPOD_MODEL_IPHONE_BLACK:
+        case ITDB_IPOD_MODEL_IPAD:
+        case ITDB_IPOD_MODEL_MOBILE_1:
+        case ITDB_IPOD_MODEL_INVALID:
+        case ITDB_IPOD_MODEL_UNKNOWN:
+            return 0;
+        default:
+            break;
+    }
+    if (strcmp(family_slug(info->ipod_model), "shuffle") == 0) {
+        return shuffle_needs_itunes_sd(info->ipod_generation);
+    }
+    return 1;
+}
+
+// Does this open database sit on a Shuffle that needs an iTunesSD alongside
+// its iTunesDB? Asked of the live device rather than a cached flag so
+// gpod_write can never disagree with what gpod_probe_device reported.
+static int db_needs_shuffle_write(Itdb_iTunesDB* itdb) {
+    if (!itdb || !itdb->device) return 0;
+    const Itdb_IpodInfo* info = itdb_device_get_ipod_info(itdb->device);
+    if (!info) return 0;
+    if (strcmp(family_slug(info->ipod_model), "shuffle") != 0) return 0;
+    return shuffle_needs_itunes_sd(info->ipod_generation);
+}
+
+int gpod_probe_device(const char* mountpoint,
+                      char** outFamily,
+                      char** outModelName,
+                      char** outGeneration,
+                      char** outModelNumber,
+                      double* outCapacityGb,
+                      int* outSupported) {
+    // Cleared up front so a caller that ignores the return value still sees
+    // NULLs rather than uninitialised stack on every failure path below.
+    if (outFamily) *outFamily = NULL;
+    if (outModelName) *outModelName = NULL;
+    if (outGeneration) *outGeneration = NULL;
+    if (outModelNumber) *outModelNumber = NULL;
+    if (outCapacityGb) *outCapacityGb = 0.0;
+    if (outSupported) *outSupported = 0;
+
+    if (!mountpoint) return 0;
+
+    Itdb_Device* device = itdb_device_new();
+    if (!device) return 0;
+
+    itdb_device_set_mountpoint(device, mountpoint);
+    // Reads iPod_Control/Device/SysInfo, plus SysInfoExtended where the device
+    // has one. Returns FALSE when neither is readable — still worth asking for
+    // the info afterwards, since libgpod falls back to an Unknown entry rather
+    // than NULL and the caller gets a coherent "unknown" instead of a failure.
+    itdb_device_read_sysinfo(device);
+
+    const Itdb_IpodInfo* info = itdb_device_get_ipod_info(device);
+    if (!info) {
+        itdb_device_free(device);
+        return 0;
+    }
+
+    if (outFamily) *outFamily = dup_or_null(family_slug(info->ipod_model));
+    if (outModelName)
+        *outModelName = dup_or_null(itdb_info_get_ipod_model_name_string(info->ipod_model));
+    if (outGeneration)
+        *outGeneration = dup_or_null(itdb_info_get_ipod_generation_string(info->ipod_generation));
+    if (outModelNumber) *outModelNumber = dup_or_null(info->model_number);
+    if (outCapacityGb) *outCapacityGb = info->capacity;
+    if (outSupported) *outSupported = can_manage(info);
+
+    // A restored or hand-built device can have no ModelNumStr at all; report
+    // that honestly rather than letting "Unknown" masquerade as a real answer.
+    int identified = info->ipod_model != ITDB_IPOD_MODEL_INVALID
+                  && info->ipod_model != ITDB_IPOD_MODEL_UNKNOWN;
+
+    itdb_device_free(device);
+    return identified;
+}
+
 unsigned long gpod_abi_size(int which) {
     switch (which) {
         case 0: return (unsigned long)sizeof(GpodTrackInfo);
@@ -326,7 +508,7 @@ int gpod_set_track_artwork(GpodDBRef dbRef, GpodTrackRef trackRef, const char* i
     if (!itdb_track_set_thumbnails(track, imagePath)) {
         return 0;
     }
-    track->has_artwork = PODSYNC_HAS_ARTWORK_YES;
+    track->has_artwork = PLATTER_HAS_ARTWORK_YES;
     return 1;
 }
 
@@ -355,7 +537,7 @@ unsigned char* gpod_get_track_artwork_png_bytes(GpodTrackRef trackRef,
     gsize encodedLen = 0;
     GError* error = NULL;
     if (!gdk_pixbuf_save_to_buffer(pixbuf, &encoded, &encodedLen, "png", &error, NULL)) {
-        fprintf(stderr, "[podsync] artwork encode failed: %s\n",
+        fprintf(stderr, "[platter] artwork encode failed: %s\n",
                 error ? error->message : "unknown");
         if (error) g_error_free(error);
         g_object_unref(pixbuf);

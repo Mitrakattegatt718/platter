@@ -171,6 +171,39 @@ unsigned char* _Nullable gpod_get_track_artwork_png_bytes(GpodTrackRef track,
                                                           int size,
                                                           int* outLen);
 
+/// Identify the iPod mounted at `mountpoint` from iPod_Control/Device/SysInfo.
+/// Does NOT parse the iTunesDB, so it stays cheap enough to run over every
+/// mounted volume in the picker.
+///
+/// Deliberately out-params of plain types rather than a struct: a fourth
+/// #[repr(C)] mirror would be a fourth thing to keep in sync by hand, and this
+/// call has no hot path that would justify it.
+///
+/// `outFamily` is a stable lowercase slug the Rust side can match on —
+/// "classic", "shuffle", "nano", "mini", "video", "photo", "color", "regular",
+/// "touch", "iphone", "ipad", "mobile", "unknown". The enum-to-slug mapping
+/// lives here, next to the libgpod header that defines the enum.
+///
+/// `outSupported` is 1 when this app can actually manage the device. That is a
+/// property of the libgpod enums, so it is decided here rather than restated
+/// in Rust: click-wheel iPods yes; a 1st/2nd generation Shuffle yes, because
+/// gpod_write() also emits the iTunesSD its firmware reads; a 3rd/4th
+/// generation Shuffle no, since that iTunesSD layout is one this libgpod does
+/// not produce; Touch/iPhone/iPad never, they keep an SQLite library libgpod
+/// cannot touch.
+///
+/// Every out-param is optional (pass NULL to skip). Returned strings are
+/// malloc'd; caller frees each with free(). Returns 1 when the device was
+/// positively identified, 0 when SysInfo is missing, unreadable, or carries a
+/// model this libgpod's table doesn't know.
+int gpod_probe_device(const char* mountpoint,
+                      char* _Nullable * _Nullable outFamily,
+                      char* _Nullable * _Nullable outModelName,
+                      char* _Nullable * _Nullable outGeneration,
+                      char* _Nullable * _Nullable outModelNumber,
+                      double* _Nullable outCapacityGb,
+                      int* _Nullable outSupported);
+
 /// Layout probe for the hand-written Rust mirrors of the three structs above.
 /// Nothing checks those mirrors at compile time — a field added on one side
 /// only silently shifts every field after it — so a test compares these
