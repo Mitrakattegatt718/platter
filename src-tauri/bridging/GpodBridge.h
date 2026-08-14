@@ -125,6 +125,12 @@ int gpod_track_at(GpodDBRef db, int index, GpodTrackInfo* outInfo);
 
 void gpod_free_track_info(GpodTrackInfo* info);
 
+/// Fetch metadata for one track the caller already knows is live — `ref`
+/// must come from the current library (the Rust side's live_refs guards
+/// this). No list walk, so refreshing the handful of tracks an edit touched
+/// stays O(edited), not O(library). Caller must gpod_free_track_info(&info).
+void gpod_track_info_for(GpodTrackRef ref, GpodTrackInfo* outInfo);
+
 /// Fetch metadata for every track in one linear walk of the library.
 /// Returns a malloc'd array of `*outCount` infos (NULL when empty); caller
 /// must free it with gpod_tracks_collect_free(). Prefer this over calling

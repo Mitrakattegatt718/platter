@@ -200,6 +200,10 @@ impl Queue {
     }
 
     pub fn remove(&mut self, ids: &[u64]) {
+        // Membership set for the same reason fresh_of uses one: "select all,
+        // remove" on a several-thousand-row queue is otherwise quadratic,
+        // executed under the queue lock everything else contends on.
+        let ids: std::collections::HashSet<u64> = ids.iter().copied().collect();
         self.items.retain(|s| !ids.contains(&s.id));
     }
 
@@ -529,7 +533,7 @@ pub fn probe_items(items: &[WorkItem], ffprobe: &Path) -> Vec<Option<(MediaProbe
                     .filter(|p| !p.codec.is_empty());
                 if let Some(probe) = probed {
                     let bytes = std::fs::metadata(&item.src).map(|m| m.len()).unwrap_or(0);
-                    *results[i].lock().unwrap() = Some((probe, bytes));
+                    *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some((probe, bytes));
                 }
             });
         }

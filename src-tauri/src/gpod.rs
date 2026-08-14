@@ -100,6 +100,9 @@ extern "C" {
     pub fn gpod_close(db: GpodDbRef);
     pub fn gpod_tracks_collect(db: GpodDbRef, out_count: *mut c_int) -> *mut GpodTrackInfo;
     pub fn gpod_tracks_collect_free(array: *mut GpodTrackInfo, count: c_int);
+    /// `track` must be live in the current library — resolve() guards this.
+    pub fn gpod_track_info_for(track: GpodTrackRef, out_info: *mut GpodTrackInfo);
+    pub fn gpod_free_track_info(info: *mut GpodTrackInfo);
     pub fn gpod_import_track(
         db: GpodDbRef,
         spec: *const GpodImportSpec,

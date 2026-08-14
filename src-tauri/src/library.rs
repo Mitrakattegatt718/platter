@@ -73,6 +73,23 @@ pub struct LibrarySnapshot {
     pub capacity: Option<Capacity>,
 }
 
+/// What an edit actually changed. Mutations used to answer with a full
+/// LibrarySnapshot — a rebuild, re-sort and re-serialization of every track
+/// in the library per edit, which at tens of thousands of tracks is megabytes
+/// of JSON across the IPC boundary for a one-field change. The frontend keeps
+/// its own track array and folds this in instead; open/import still send the
+/// full snapshot, because there the whole list genuinely changed.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryPatch {
+    /// Post-edit state of every surviving track the operation touched.
+    pub updated: Vec<Track>,
+    /// Ids that no longer resolve — removed, or gone under us.
+    pub removed_ids: Vec<String>,
+    /// Refreshed after every mutation: artwork and removals move real bytes.
+    pub capacity: Option<Capacity>,
+}
+
 pub struct Library {
     db: Option<GpodDbRef>,
     mount_point: Option<String>,
@@ -85,10 +102,11 @@ pub struct Library {
     /// (pointer values can be reused by a later import), and the whole map is
     /// dropped on open/close.
     art_cache: HashMap<(usize, i32), Arc<str>>,
-    /// Insertion order of art_cache keys, for FIFO eviction at the cap —
-    /// scrolling a several-thousand-album library must not grow the map
-    /// without bound.
+    /// Recency order of art_cache keys, oldest first — hits re-queue their
+    /// key at the back, eviction pops the front until under the byte budget.
     art_order: std::collections::VecDeque<(usize, i32)>,
+    /// Sum of cached data-URL lengths; what the budget is enforced against.
+    art_cache_bytes: usize,
     /// Bumped whenever cached art could be stale (open/close/evict). An
     /// extraction that started before the bump must not be inserted after it
     /// — art_cache_put checks the generation captured at extraction time.
@@ -105,11 +123,23 @@ pub struct Library {
     /// Wakes the auto-flush thread. Held here rather than in a global so a
     /// Library built for a test simply has nothing listening on it.
     flush_signal: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    /// Reports background save failures to the UI (a Tauri event, in the
+    /// app). None in tests; the failure then only reaches the return value.
+    /// A background flush that fails silently is unsaved edits the user
+    /// believes are on the device.
+    notify_error: Option<ErrorNotifier>,
 }
 
-/// Thumbnails kept in memory. 80px PNGs run 10-40 KB of base64 each, so this
-/// bounds the cache somewhere around a few tens of MB.
-const ART_CACHE_CAP: usize = 512;
+/// The channel background failures are reported through.
+pub type ErrorNotifier = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Thumbnails kept in memory, bounded by bytes rather than entries: `size` is
+/// caller-chosen, so one entry can be a 15 KB 80px thumb or a 500 KB share-
+/// card cover — an entry cap admitted hundreds of MB over a long session.
+/// Eviction is LRU (hits re-queue), because scrolling back and forth through
+/// an album wall re-touches the same keys and FIFO evicted exactly the
+/// entries about to be re-requested.
+const ART_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 // Raw pointers strip Send; sound here because the pointer is only ever used
 // while holding the Mutex that owns this struct.
@@ -126,12 +156,14 @@ pub fn new_unmanaged() -> Library {
         live_refs: HashSet::new(),
         art_cache: HashMap::new(),
         art_order: std::collections::VecDeque::new(),
+        art_cache_bytes: 0,
         art_gen: 0,
         dirty: false,
         last_dirty_at: None,
         last_backup_at: None,
         saves_since_backup: 0,
         flush_signal: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
+        notify_error: None,
     }
 }
 
@@ -178,8 +210,19 @@ fn spawn_auto_flush(lib: SharedLibrary) {
             }
         }
 
-        let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = lib.flush_if_dirty();
+        // The lock is released before the notifier runs: emitting a Tauri
+        // event re-enters arbitrary runtime code, and nothing that isn't
+        // library state belongs under the library mutex.
+        let (result, notify) = {
+            let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
+            (lib.flush_if_dirty(), lib.notify_error.clone())
+        };
+        if let Err(msg) = result {
+            eprintln!("auto-flush failed: {msg}");
+            if let Some(notify) = notify {
+                notify(&msg);
+            }
+        }
     });
 }
 
@@ -218,6 +261,7 @@ impl Library {
         self.live_refs.clear();
         self.art_cache.clear();
         self.art_order.clear();
+        self.art_cache_bytes = 0;
         self.art_gen += 1;
         self.dirty = false;
         self.last_dirty_at = None;
@@ -236,6 +280,12 @@ impl Library {
     /// True while edits are waiting to reach the device.
     pub fn is_dirty(&self) -> bool {
         self.dirty
+    }
+
+    /// Installs the channel background failures are reported through — in the
+    /// app, a closure emitting a `library:flush-failed` Tauri event.
+    pub fn set_error_notifier(&mut self, notify: ErrorNotifier) {
+        self.notify_error = Some(notify);
     }
 
     /// Writes the iTunesDB only if there are unsaved changes.
@@ -262,11 +312,46 @@ impl Library {
             return;
         };
         let itunes = std::path::Path::new(mount).join("iPod_Control/iTunes");
-        for name in ["iTunesDB", "Play Counts"] {
+
+        // Stage both copies to temp names first and only then rename both
+        // over the .baks. Copying straight onto the .baks meant a failure on
+        // the SECOND copy (full FAT32 volume, transient USB error) left a new
+        // iTunesDB.bak beside a stale Play Counts.bak — a pair that silently
+        // attributes plays to the wrong tracks if ever restored, worse than
+        // no backup. Rename-per-file is atomic on the same volume; the
+        // remaining window is process-crash between the two renames, far
+        // smaller than a whole failed copy.
+        let names = ["iTunesDB", "Play Counts"];
+        let mut staged: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+        let mut ok = true;
+        for name in names {
             let source = itunes.join(name);
-            if source.exists() {
-                let _ = std::fs::copy(&source, itunes.join(format!("{name}.bak")));
+            if !source.exists() {
+                continue;
             }
+            let tmp = itunes.join(format!("{name}.bak.tmp"));
+            if std::fs::copy(&source, &tmp).is_ok() {
+                staged.push((tmp, itunes.join(format!("{name}.bak"))));
+            } else {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            for (tmp, dest) in &staged {
+                if std::fs::rename(tmp, dest).is_err() {
+                    ok = false;
+                }
+            }
+        }
+        if !ok {
+            for (tmp, _) in &staged {
+                let _ = std::fs::remove_file(tmp);
+            }
+            eprintln!("backup pair refresh failed; keeping the previous pair");
+            // Deliberately not fatal, and the cadence fields still advance:
+            // retrying on every save against a full volume would copy tens of
+            // MB over USB each flush for nothing.
         }
         self.last_backup_at = Some(std::time::Instant::now());
         self.saves_since_backup = 0;
@@ -310,8 +395,21 @@ impl Library {
         self.live_refs.contains(&ptr).then_some(ptr as GpodTrackRef)
     }
 
-    pub fn art_cache_get(&self, ptr: usize, size: i32) -> Option<Arc<str>> {
-        self.art_cache.get(&(ptr, size)).cloned()
+    pub fn art_cache_get(&mut self, ptr: usize, size: i32) -> Option<Arc<str>> {
+        let key = (ptr, size);
+        let hit = self.art_cache.get(&key).cloned();
+        // LRU touch: a hit moves to the back of the eviction order. The
+        // linear scan is bounded by the byte budget (a few thousand entries)
+        // and runs once per artwork request — noise next to the FFI extract
+        // a miss costs.
+        if hit.is_some() {
+            if let Some(pos) = self.art_order.iter().position(|k| *k == key) {
+                if let Some(k) = self.art_order.remove(pos) {
+                    self.art_order.push_back(k);
+                }
+            }
+        }
+        hit
     }
 
     pub fn art_generation(&self) -> u64 {
@@ -327,14 +425,21 @@ impl Library {
             return;
         }
         let key = (ptr, size);
-        // Re-insertion of an existing key must not double-book the deque.
-        if !self.art_cache.contains_key(&key) {
+        // Re-insertion of an existing key must not double-book the deque or
+        // the byte count.
+        if let Some(old) = self.art_cache.get(&key) {
+            self.art_cache_bytes = self.art_cache_bytes.saturating_sub(old.len());
+        } else {
             self.art_order.push_back(key);
         }
+        self.art_cache_bytes += data_url.len();
         self.art_cache.insert(key, data_url);
-        while self.art_order.len() > ART_CACHE_CAP {
-            if let Some(evicted) = self.art_order.pop_front() {
-                self.art_cache.remove(&evicted);
+        while self.art_cache_bytes > ART_CACHE_MAX_BYTES {
+            let Some(evicted) = self.art_order.pop_front() else {
+                break;
+            };
+            if let Some(old) = self.art_cache.remove(&evicted) {
+                self.art_cache_bytes = self.art_cache_bytes.saturating_sub(old.len());
             }
         }
     }
@@ -343,7 +448,15 @@ impl Library {
     /// after removal (a freed pointer may be reused by a later import).
     pub fn art_cache_evict(&mut self, ids: &[String]) {
         let ptrs: HashSet<usize> = ids.iter().filter_map(|id| id.parse().ok()).collect();
-        self.art_cache.retain(|(ptr, _), _| !ptrs.contains(ptr));
+        let mut freed = 0usize;
+        self.art_cache.retain(|(ptr, _), data_url| {
+            let keep = !ptrs.contains(ptr);
+            if !keep {
+                freed += data_url.len();
+            }
+            keep
+        });
+        self.art_cache_bytes = self.art_cache_bytes.saturating_sub(freed);
         self.art_order.retain(|(ptr, _)| !ptrs.contains(ptr));
         self.art_gen += 1;
     }
@@ -353,6 +466,46 @@ impl Library {
             mount_point: self.mount_point.clone(),
             tracks: self.reload_tracks(),
             capacity: self.capacity(),
+        }
+    }
+
+    /// Post-edit state of exactly the tracks an operation touched. Ids that
+    /// no longer resolve are reported as removed. O(touched), not O(library):
+    /// each live track is read straight through its pointer with no list walk.
+    pub fn patch_for(&self, ids: &[String]) -> LibraryPatch {
+        let mut updated = Vec::new();
+        let mut removed_ids = Vec::new();
+        for id in ids {
+            match self.resolve(id) {
+                Some(track) => {
+                    let mut info = std::mem::MaybeUninit::<GpodTrackInfo>::uninit();
+                    // SAFETY: resolve() vouched the pointer is live, and
+                    // fill_info writes every field of the out-param.
+                    let info = unsafe {
+                        gpod_track_info_for(track, info.as_mut_ptr());
+                        info.assume_init()
+                    };
+                    updated.push(track_from_info(&info));
+                    let mut info = info;
+                    unsafe { gpod_free_track_info(&mut info) };
+                }
+                None => removed_ids.push(id.clone()),
+            }
+        }
+        LibraryPatch {
+            updated,
+            removed_ids,
+            capacity: self.capacity(),
+        }
+    }
+
+    /// Drops a track ref after gpod_remove_track freed it. Mutations no
+    /// longer rebuild live_refs from a full reload, so without this the freed
+    /// pointer would still resolve — a use-after-free on the next command
+    /// that names it.
+    pub fn forget(&mut self, id: &str) {
+        if let Ok(ptr) = id.parse::<usize>() {
+            self.live_refs.remove(&ptr);
         }
     }
 
@@ -370,47 +523,10 @@ impl Library {
         }
         let infos = unsafe { std::slice::from_raw_parts(array, count as usize) };
 
-        let take = |p: *mut std::os::raw::c_char| -> String {
-            if p.is_null() {
-                String::new()
-            } else {
-                unsafe { std::ffi::CStr::from_ptr(p) }
-                    .to_string_lossy()
-                    .into_owned()
-            }
-        };
-
         let mut tracks = Vec::with_capacity(count as usize);
         for info in infos {
-            let ptr = info.track_ref as usize;
-            self.live_refs.insert(ptr);
-            tracks.push(Track {
-                id: ptr.to_string(),
-                title: take(info.title),
-                artist: take(info.artist),
-                album_artist: take(info.albumartist),
-                album: take(info.album),
-                composer: take(info.composer),
-                genre: take(info.genre),
-                file_type: take(info.filetype),
-                track_number: info.track_nr,
-                track_count: info.track_count,
-                disc_number: info.cd_nr,
-                disc_count: info.disc_count,
-                year: info.year,
-                bitrate: info.bitrate,
-                sample_rate: info.samplerate,
-                duration_ms: info.duration_ms,
-                size_bytes: info.size_bytes,
-                date_added: (info.time_added > 0).then_some(info.time_added),
-                has_artwork: info.has_artwork == 1,
-                play_count: info.playcount,
-                rating: info.rating,
-                last_played: (info.time_played > 0).then_some(info.time_played),
-                ipod_path: take(info.ipod_path),
-                transferred: info.transferred == 1,
-                has_drm: info.has_drm == 1,
-            });
+            self.live_refs.insert(info.track_ref as usize);
+            tracks.push(track_from_info(info));
         }
         unsafe { gpod_tracks_collect_free(array, count) };
 
@@ -429,5 +545,46 @@ impl Library {
 
     pub fn db(&self) -> Result<GpodDbRef, String> {
         self.db.ok_or_else(|| "No iPod library is open.".into())
+    }
+}
+
+/// One Track from one C-side info struct. Shared by the full reload and the
+/// per-edit patch so the two can never disagree about a field mapping.
+fn track_from_info(info: &GpodTrackInfo) -> Track {
+    let take = |p: *mut std::os::raw::c_char| -> String {
+        if p.is_null() {
+            String::new()
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(p) }
+                .to_string_lossy()
+                .into_owned()
+        }
+    };
+    Track {
+        id: (info.track_ref as usize).to_string(),
+        title: take(info.title),
+        artist: take(info.artist),
+        album_artist: take(info.albumartist),
+        album: take(info.album),
+        composer: take(info.composer),
+        genre: take(info.genre),
+        file_type: take(info.filetype),
+        track_number: info.track_nr,
+        track_count: info.track_count,
+        disc_number: info.cd_nr,
+        disc_count: info.disc_count,
+        year: info.year,
+        bitrate: info.bitrate,
+        sample_rate: info.samplerate,
+        duration_ms: info.duration_ms,
+        size_bytes: info.size_bytes,
+        date_added: (info.time_added > 0).then_some(info.time_added),
+        has_artwork: info.has_artwork == 1,
+        play_count: info.playcount,
+        rating: info.rating,
+        last_played: (info.time_played > 0).then_some(info.time_played),
+        ipod_path: take(info.ipod_path),
+        transferred: info.transferred == 1,
+        has_drm: info.has_drm == 1,
     }
 }

@@ -11,7 +11,7 @@ use crate::app_icon::{self, AppIconInfo};
 use crate::convert;
 use crate::convert_job;
 use crate::gpod::*;
-use crate::library::{LibrarySnapshot, SharedLibrary};
+use crate::library::{LibraryPatch, LibrarySnapshot, SharedLibrary};
 use crate::settings;
 use crate::tags::{self, PendingImport};
 use base64::Engine;
@@ -59,7 +59,7 @@ impl ProgressThrottle {
 
     fn emit(&self, text: impl Into<String>, fraction: Option<f64>, force: bool) {
         {
-            let mut last = self.last.lock().unwrap();
+            let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
             let now = std::time::Instant::now();
             if !force
                 && last.is_some_and(|t| now.duration_since(t).as_millis() < 100)
@@ -117,9 +117,11 @@ fn volume_capacity(path: &std::path::Path) -> Option<(u64, u64)> {
 #[tauri::command]
 pub async fn list_volumes() -> Result<Vec<VolumeInfo>, String> {
     blocking(|| {
-        let Ok(entries) = std::fs::read_dir("/Volumes") else {
-            return Ok(Vec::new());
-        };
+        // Propagate the failure instead of answering with an empty list: on a
+        // TCC denial the error string is what routes the UI to the granted-
+        // permissions guidance, and "no volumes" would read as "no iPod".
+        let entries = std::fs::read_dir("/Volumes")
+            .map_err(|e| format!("Couldn't scan /Volumes: {e}"))?;
         let mut volumes: Vec<VolumeInfo> = entries
             .flatten()
             .filter(|e| e.file_name() != "Macintosh HD")
@@ -186,7 +188,7 @@ pub async fn open_library(
 ) -> Result<LibrarySnapshot, String> {
     let lib = state.inner().clone();
     blocking(move || {
-        let mut lib = lib.lock().unwrap();
+        let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
         lib.open(&mount_point)?;
         Ok(lib.snapshot())
     })
@@ -197,7 +199,7 @@ pub async fn open_library(
 pub async fn close_library(state: State<'_, SharedLibrary>) -> Result<LibrarySnapshot, String> {
     let lib = state.inner().clone();
     blocking(move || {
-        let mut lib = lib.lock().unwrap();
+        let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
         lib.close();
         Ok(lib.snapshot())
     })
@@ -211,7 +213,7 @@ pub async fn eject_ipod(state: State<'_, SharedLibrary>) -> Result<LibrarySnapsh
     let lib = state.inner().clone();
     blocking(move || {
         let (snapshot, mount) = {
-            let mut lib = lib.lock().unwrap();
+            let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
             let mount = lib.mount_point().map(str::to_string);
             lib.close();
             (lib.snapshot(), mount)
@@ -219,17 +221,36 @@ pub async fn eject_ipod(state: State<'_, SharedLibrary>) -> Result<LibrarySnapsh
         let Some(mount) = mount else {
             return Ok(snapshot);
         };
-        let ejected = std::process::Command::new("diskutil")
+        // Keep diskutil's own words: its stderr names the actual blocker
+        // ("busy: PID 1234 (mds)"), which is also why Finder would fail.
+        let detail = match std::process::Command::new("diskutil")
             .args(["eject", &mount])
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !ejected {
-            return Err(
-                "iPod disconnected, but the volume couldn't be ejected automatically. \
-                 You may need to eject it manually in Finder."
-                    .into(),
-            );
+        {
+            Ok(o) if o.status.success() => None,
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                let err = err.trim();
+                let out = String::from_utf8_lossy(&o.stdout);
+                let out = out.trim();
+                Some(if !err.is_empty() {
+                    err.to_string()
+                } else {
+                    out.to_string()
+                })
+            }
+            Err(e) => Some(format!("couldn't run diskutil: {e}")),
+        };
+        if let Some(detail) = detail {
+            let detail = if detail.is_empty() {
+                String::new()
+            } else {
+                format!(" ({detail})")
+            };
+            return Err(format!(
+                "iPod disconnected, but the volume couldn't be ejected \
+                 automatically{detail}. You may need to eject it manually in Finder."
+            ));
         }
         Ok(snapshot)
     })
@@ -239,7 +260,7 @@ pub async fn eject_ipod(state: State<'_, SharedLibrary>) -> Result<LibrarySnapsh
 #[tauri::command]
 pub async fn save_library(state: State<'_, SharedLibrary>) -> Result<(), String> {
     let lib = state.inner().clone();
-    blocking(move || lib.lock().unwrap().save()).await
+    blocking(move || lib.lock().unwrap_or_else(|e| e.into_inner()).save()).await
 }
 
 /// Opens the System Settings pane where the user grants removable-volume
@@ -280,50 +301,92 @@ pub async fn set_app_icon(app: AppHandle, id: Option<String>) -> Result<(), Stri
 }
 
 /// Tag reading is pure Rust with no shared state, so files parse on all
-/// cores; results come back in input order.
+/// cores; results come back in input order. Only this dialog-facing command
+/// wants the base64 preview — the internal import paths pass false and carry
+/// just the staged artwork_path.
 #[tauri::command]
 pub async fn read_tags(app: AppHandle, paths: Vec<String>) -> Result<Vec<PendingImport>, String> {
-    blocking(move || Ok(read_tags_blocking(&app, paths))).await
+    blocking(move || Ok(read_tags_blocking(&app, paths, true))).await
 }
 
-fn read_tags_blocking(app: &AppHandle, paths: Vec<String>) -> Vec<PendingImport> {
+fn read_tags_blocking(app: &AppHandle, paths: Vec<String>, with_preview: bool) -> Vec<PendingImport> {
     let total = paths.len();
+    let jobs: Vec<(usize, String)> = paths.into_iter().enumerate().collect();
+    parallel_tag_read(app, &jobs, total, "Reading tags", with_preview)
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// Work-stealing parallel tag read: workers pull the next job off a shared
+/// counter, so an album of 200 MB WAVs can't strand one thread with all the
+/// heavy files while the others sit idle — which is exactly what the previous
+/// contiguous chunking did to the tail of big imports. `jobs` are
+/// (slot, path); each result lands at its slot in a Vec sized `slots`.
+fn parallel_tag_read(
+    app: &AppHandle,
+    jobs: &[(usize, String)],
+    slots: usize,
+    label: &str,
+    with_preview: bool,
+) -> Vec<Option<PendingImport>> {
+    let mut results: Vec<Option<PendingImport>> = (0..slots).map(|_| None).collect();
+    let total = jobs.len();
     if total == 0 {
-        return Vec::new();
+        return results;
     }
     let workers = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
         .min(total);
-    let chunk = total.div_ceil(workers);
+    let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
     // High-water mark so parallel completions never emit a lower count after
     // a higher one — the progress bar must not move backwards.
     let emitted = AtomicUsize::new(0);
     let throttle = ProgressThrottle::new(app);
 
-    let mut results: Vec<Option<PendingImport>> = (0..total).map(|_| None).collect();
     std::thread::scope(|s| {
-        for (paths_chunk, out_chunk) in paths.chunks(chunk).zip(results.chunks_mut(chunk)) {
-            let done = &done;
-            let emitted = &emitted;
-            let throttle = &throttle;
-            s.spawn(move || {
-                for (path, out) in paths_chunk.iter().zip(out_chunk.iter_mut()) {
-                    *out = Some(tags::read(path));
-                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    if emitted.fetch_max(n, Ordering::Relaxed) < n {
-                        throttle.emit(
-                            format!("Reading tags — {n} of {total}"),
-                            Some(n as f64 / total as f64),
-                            n == total,
-                        );
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                let next = &next;
+                let done = &done;
+                let emitted = &emitted;
+                let throttle = &throttle;
+                s.spawn(move || {
+                    let mut local: Vec<(usize, PendingImport)> = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        if i >= total {
+                            break;
+                        }
+                        let (slot, path) = &jobs[i];
+                        let item = if with_preview {
+                            tags::read(path)
+                        } else {
+                            tags::read_no_preview(path)
+                        };
+                        local.push((*slot, item));
+                        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                        if emitted.fetch_max(n, Ordering::Relaxed) < n {
+                            throttle.emit(
+                                format!("{label} — {n} of {total}"),
+                                Some(n as f64 / total as f64),
+                                n == total,
+                            );
+                        }
                     }
-                }
-            });
+                    local
+                })
+            })
+            .collect();
+        for handle in handles {
+            for (slot, item) in handle.join().unwrap_or_default() {
+                results[slot] = Some(item);
+            }
         }
     });
-    results.into_iter().flatten().collect()
+    results
 }
 
 #[derive(Serialize, Clone)]
@@ -440,7 +503,7 @@ fn import_tracks_blocking(
     let (sources, prepare_failures, scratch_dir) = prepare_sources(app, &items);
 
     // Fail fast when nothing is connected, before doing any per-file work.
-    lib.lock().unwrap().db()?;
+    lib.lock().unwrap_or_else(|e| e.into_inner()).db()?;
 
     let total = items.len();
     let mut imported = 0usize;
@@ -458,16 +521,21 @@ fn import_tracks_blocking(
     //
     // This runs up front rather than per iteration below because lofty parses
     // the whole file — it used to happen with the library mutex held, which is
-    // exactly the kind of work that must not block the UI.
-    let recovered: Vec<Option<tags::PendingImport>> = items
-        .iter()
-        .enumerate()
-        .map(|(index, item)| {
-            let source = sources[index].as_ref()?;
-            let converted = *source != item.file_path;
-            (converted || item.duration_ms == 0).then(|| tags::read(source))
-        })
-        .collect();
+    // exactly the kind of work that must not block the UI. It runs on all
+    // cores for the same reason the staging read does: after converting a
+    // whole FLAC batch, every item lands here.
+    let recovered: Vec<Option<tags::PendingImport>> = {
+        let jobs: Vec<(usize, String)> = items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                let source = sources[index].as_ref()?;
+                let converted = *source != item.file_path;
+                (converted || item.duration_ms == 0).then(|| (index, source.clone()))
+            })
+            .collect();
+        parallel_tag_read(app, &jobs, items.len(), "Reading converted files", false)
+    };
 
     let throttle = ProgressThrottle::new(app);
     for (index, item) in items.iter().enumerate() {
@@ -499,7 +567,7 @@ fn import_tracks_blocking(
         // The db handle is re-resolved inside each iteration and never cached
         // across an unlock: a close or eject in the gap frees it, and reusing
         // the old pointer would be a use-after-free.
-        let lib = lib.lock().unwrap();
+        let lib = lib.lock().unwrap_or_else(|e| e.into_inner());
         let db = match lib.db() {
             Ok(db) => db,
             // Disconnected mid-import: gpod_close freed the handle and every
@@ -507,8 +575,14 @@ fn import_tracks_blocking(
             // the database any longer. Report the whole batch as failed
             // rather than claiming a partial success that no longer exists.
             Err(msg) => {
+                // The bookkeeping touches no db state, so the (closed but
+                // locked) library is released first — and the membership set
+                // keeps a 10k-item batch from an O(n²) tail scan.
+                drop(lib);
+                let already: std::collections::HashSet<usize> =
+                    failed_indices.iter().copied().collect();
                 for (rest, remaining) in items.iter().enumerate() {
-                    if sources[rest].is_some() && !failed_indices.contains(&rest) {
+                    if sources[rest].is_some() && !already.contains(&rest) {
                         failures.push(format!("{}: {msg}", remaining.title));
                         failed_indices.push(rest);
                     }
@@ -572,7 +646,7 @@ fn import_tracks_blocking(
         drop(lib);
     }
 
-    let mut lib = lib.lock().unwrap();
+    let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
     let saved = if imported > 0 {
         emit_progress(app, "Saving to iPod…", None);
         lib.save()
@@ -660,7 +734,7 @@ pub async fn import_files(
         let result = if ready.is_empty() {
             Err(rejected.join("\n"))
         } else {
-            let staged = read_tags_blocking(&app, ready);
+            let staged = read_tags_blocking(&app, ready, false);
             import_tracks_blocking(&app, &lib, staged).map(|mut r| {
                 r.failures.extend(rejected);
                 r
@@ -695,10 +769,10 @@ pub async fn update_track(
     state: State<'_, SharedLibrary>,
     id: String,
     fields: TrackFields,
-) -> Result<LibrarySnapshot, String> {
+) -> Result<LibraryPatch, String> {
     let lib = state.inner().clone();
     blocking(move || {
-        let mut lib = lib.lock().unwrap();
+        let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
         let db = lib.db()?;
         let track = lib.resolve(&id).ok_or("Track no longer exists.")?;
         let (t, ar, aa, al, co, g) = (
@@ -724,7 +798,7 @@ pub async fn update_track(
         };
         unsafe { gpod_update_track_metadata(db, track, &edit) };
         lib.mark_dirty();
-        Ok(lib.snapshot())
+        Ok(lib.patch_for(std::slice::from_ref(&id)))
     })
     .await
 }
@@ -737,10 +811,10 @@ pub async fn set_field(
     ids: Vec<String>,
     field: String,
     value: String,
-) -> Result<LibrarySnapshot, String> {
+) -> Result<LibraryPatch, String> {
     let lib = state.inner().clone();
     blocking(move || {
-        let mut lib = lib.lock().unwrap();
+        let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
         let db = lib.db()?;
         let value_c = c_string(&value)?;
         for id in &ids {
@@ -760,7 +834,58 @@ pub async fn set_field(
             unsafe { gpod_update_track_metadata(db, track, &edit) };
         }
         lib.mark_dirty();
-        Ok(lib.snapshot())
+        Ok(lib.patch_for(&ids))
+    })
+    .await
+}
+
+/// Several bulk fields stamped in one lock take and one round-trip — the
+/// bulk panel applies every changed field of a selection at once instead of
+/// paying a command (and a patch) per field.
+#[tauri::command]
+pub async fn set_fields(
+    state: State<'_, SharedLibrary>,
+    ids: Vec<String>,
+    fields: Vec<(String, String)>,
+) -> Result<LibraryPatch, String> {
+    let lib = state.inner().clone();
+    blocking(move || {
+        // Validated up front so an unknown field can't half-apply the batch.
+        for (field, _) in &fields {
+            if !matches!(
+                field.as_str(),
+                "artist" | "albumArtist" | "album" | "composer" | "genre"
+            ) {
+                return Err(format!("Unknown field: {field}"));
+            }
+        }
+        let values: Vec<CString> = fields
+            .iter()
+            .map(|(_, value)| c_string(value))
+            .collect::<Result<_, _>>()?;
+
+        let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
+        let db = lib.db()?;
+        for id in &ids {
+            let Some(track) = lib.resolve(id) else {
+                continue;
+            };
+            let mut edit = GpodTrackEdit::unchanged();
+            for ((field, _), value_c) in fields.iter().zip(&values) {
+                let v = value_c.as_ptr();
+                match field.as_str() {
+                    "artist" => edit.artist = v,
+                    "albumArtist" => edit.albumartist = v,
+                    "album" => edit.album = v,
+                    "composer" => edit.composer = v,
+                    "genre" => edit.genre = v,
+                    _ => unreachable!("validated above"),
+                }
+            }
+            unsafe { gpod_update_track_metadata(db, track, &edit) };
+        }
+        lib.mark_dirty();
+        Ok(lib.patch_for(&ids))
     })
     .await
 }
@@ -770,10 +895,10 @@ pub async fn set_artwork(
     state: State<'_, SharedLibrary>,
     ids: Vec<String>,
     image_path: String,
-) -> Result<LibrarySnapshot, String> {
+) -> Result<LibraryPatch, String> {
     let lib = state.inner().clone();
     blocking(move || {
-        let mut lib = lib.lock().unwrap();
+        let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
         let db = lib.db()?;
         let path_c = c_string(&image_path)?;
         for id in &ids {
@@ -783,7 +908,7 @@ pub async fn set_artwork(
         }
         lib.art_cache_evict(&ids);
         lib.mark_dirty();
-        Ok(lib.snapshot())
+        Ok(lib.patch_for(&ids))
     })
     .await
 }
@@ -792,20 +917,24 @@ pub async fn set_artwork(
 pub async fn remove_tracks(
     state: State<'_, SharedLibrary>,
     ids: Vec<String>,
-) -> Result<LibrarySnapshot, String> {
+) -> Result<LibraryPatch, String> {
     let lib = state.inner().clone();
     blocking(move || {
-        let mut lib = lib.lock().unwrap();
+        let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
         let db = lib.db()?;
         for id in &ids {
             if let Some(track) = lib.resolve(id) {
                 unsafe { gpod_remove_track(db, track) };
+                // The pointer is freed. Mutations no longer rebuild
+                // live_refs, so it must be dropped here or the next command
+                // naming this id dereferences freed memory.
+                lib.forget(id);
             }
         }
         // Freed pointers can be reused by a later import — stale art must go.
         lib.art_cache_evict(&ids);
         lib.mark_dirty();
-        Ok(lib.snapshot())
+        Ok(lib.patch_for(&ids))
     })
     .await
 }
@@ -882,16 +1011,16 @@ pub async fn convert_add(
         let tools = convert::tools().ok_or(convert::FFMPEG_MISSING)?;
         let scanned = convert::scan(&paths);
         // Read the mount before taking the queue lock; never hold both.
-        let mount = lib.lock().unwrap().mount_point().map(str::to_string);
+        let mount = lib.lock().unwrap_or_else(|e| e.into_inner()).mount_point().map(str::to_string);
         // Short lock to diff, NO lock for the probing (the slow part), then a
         // short lock to insert — see probe_items for why.
         let fresh = {
-            let mut q = queue.lock().unwrap();
+            let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
             q.ipod_mount = mount;
             q.fresh_of(scanned)
         };
         let probed = convert_job::probe_items(&fresh, &tools.ffprobe);
-        let mut q = queue.lock().unwrap();
+        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
         q.insert_probed(fresh, probed);
         Ok(q.rows(None))
     })
@@ -905,7 +1034,7 @@ pub async fn convert_remove(
 ) -> Result<Vec<convert_job::SourceRow>, String> {
     let queue = queue.inner().clone();
     blocking(move || {
-        let mut q = queue.lock().unwrap();
+        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
         q.remove(&ids);
         Ok(q.rows(None))
     })
@@ -918,7 +1047,7 @@ pub async fn convert_clear(
 ) -> Result<Vec<convert_job::SourceRow>, String> {
     let queue = queue.inner().clone();
     blocking(move || {
-        let mut q = queue.lock().unwrap();
+        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
         q.clear();
         Ok(q.rows(None))
     })
@@ -937,8 +1066,8 @@ pub async fn convert_estimate(
     let queue = queue.inner().clone();
     let lib = lib.inner().clone();
     blocking(move || {
-        let mount = lib.lock().unwrap().mount_point().map(str::to_string);
-        let mut q = queue.lock().unwrap();
+        let mount = lib.lock().unwrap_or_else(|e| e.into_inner()).mount_point().map(str::to_string);
+        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
         q.ipod_mount = mount;
         Ok(ConvertEstimateResult {
             estimate: convert_job::estimate(&q, &target, &destination)?,
@@ -965,7 +1094,7 @@ pub struct ConvertEstimateResult {
 #[tauri::command]
 pub fn cancel_convert(queue: State<'_, convert_job::SharedQueue>) -> Result<(), String> {
     // Clone the Arc out and drop the lock before killing anything.
-    let control = queue.lock().unwrap().control.clone();
+    let control = queue.lock().unwrap_or_else(|e| e.into_inner()).control.clone();
     control.cancel();
     Ok(())
 }
@@ -1017,7 +1146,7 @@ impl JobEvents {
         // webview for a full re-render. Phase changes go through immediately;
         // steady-state converting updates don't need more than ~10/s.
         if phase == "converting" {
-            let mut last = self.last_progress.lock().unwrap();
+            let mut last = self.last_progress.lock().unwrap_or_else(|e| e.into_inner());
             let now = std::time::Instant::now();
             if last.is_some_and(|t| now.duration_since(t).as_millis() < 100) {
                 return;
@@ -1033,7 +1162,7 @@ impl JobEvents {
                 "done": done,
                 "total": self.total,
                 "fraction": if self.total > 0 { Some(done as f64 / self.total as f64) } else { None },
-                "current": self.current.lock().unwrap().clone(),
+                "current": self.current.lock().unwrap_or_else(|e| e.into_inner()).clone(),
                 "fileFraction": file_fraction,
             }),
         );
@@ -1041,7 +1170,7 @@ impl JobEvents {
 
     fn push_line(&self, level: &'static str, file: Option<&str>, line: &str) {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        self.pending.lock().unwrap().push(serde_json::json!({
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).push(serde_json::json!({
             "seq": seq,
             "level": level,
             "file": file,
@@ -1059,7 +1188,7 @@ impl JobEvents {
     }
 
     fn push_status_id(&self, id: u64, status: &'static str, detail: Option<&str>) {
-        self.pending_items.lock().unwrap().push(serde_json::json!({
+        self.pending_items.lock().unwrap_or_else(|e| e.into_inner()).push(serde_json::json!({
             "id": id,
             "status": status,
             "detail": detail,
@@ -1068,12 +1197,12 @@ impl JobEvents {
     }
 
     fn maybe_flush(&self, force: bool) {
-        let mut last = self.last_flush.lock().unwrap();
+        let mut last = self.last_flush.lock().unwrap_or_else(|e| e.into_inner());
         if !force && last.elapsed() < std::time::Duration::from_millis(120) {
             return;
         }
-        let lines: Vec<_> = std::mem::take(&mut *self.pending.lock().unwrap());
-        let updates: Vec<_> = std::mem::take(&mut *self.pending_items.lock().unwrap());
+        let lines: Vec<_> = std::mem::take(&mut *self.pending.lock().unwrap_or_else(|e| e.into_inner()));
+        let updates: Vec<_> = std::mem::take(&mut *self.pending_items.lock().unwrap_or_else(|e| e.into_inner()));
         *last = std::time::Instant::now();
         drop(last);
         if !lines.is_empty() {
@@ -1093,7 +1222,7 @@ impl JobEvents {
 
 impl convert::ConvertObserver for JobEvents {
     fn started(&self, index: usize, name: &str) {
-        *self.current.lock().unwrap() = name.to_string();
+        *self.current.lock().unwrap_or_else(|e| e.into_inner()) = name.to_string();
         self.push_status(index, "converting", None);
         self.emit_progress("converting", Some(0.0));
     }
@@ -1145,7 +1274,7 @@ pub async fn convert_start(
 
         // Everything the run needs, lifted out under one short lock.
         let ((ids, work), control, job_id) = {
-            let mut q = queue.lock().unwrap();
+            let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
             if q.is_empty() {
                 return Err("Nothing to convert — add some files first.".into());
             }
@@ -1240,7 +1369,7 @@ pub async fn convert_start(
                 }),
             );
 
-            let staged = read_tags_blocking(&app, ready);
+            let staged = read_tags_blocking(&app, ready, false);
             let result = import_tracks_blocking(&app, &lib, staged);
             queue
                 .lock()
@@ -1255,8 +1384,12 @@ pub async fn convert_start(
                 Ok(r) => {
                     // failed_indices indexes the submitted items, which are
                     // index-aligned with `ready` and so with `ready_ids`.
+                    // Membership set: a mostly-failed 10k batch would make
+                    // the Vec scan quadratic right at the end of a long job.
+                    let failed: std::collections::HashSet<usize> =
+                        r.failed_indices.iter().copied().collect();
                     for (i, &id) in ready_ids.iter().enumerate() {
-                        if r.failed_indices.contains(&i) {
+                        if failed.contains(&i) {
                             events.push_status_id(id, "failed", Some("Import failed"));
                         } else {
                             events.push_status_id(id, "imported", None);
@@ -1312,7 +1445,7 @@ pub async fn get_artwork(
             return Ok(None);
         };
         let (bytes, gen) = {
-            let guard = lib.lock().unwrap();
+            let mut guard = lib.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(hit) = guard.art_cache_get(ptr, size) {
                 return Ok(Some(hit.to_string()));
             }

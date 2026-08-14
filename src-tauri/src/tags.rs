@@ -46,7 +46,20 @@ pub struct PendingImport {
     pub artwork_data_url: Option<String>,
 }
 
+/// Full read including the base64 preview data URL — only the staging dialog
+/// shows previews; every other caller wants `read_no_preview`.
 pub fn read(path: &str) -> PendingImport {
+    read_with(path, true)
+}
+
+/// Skips the in-RAM base64 copy of the embedded cover. The internal import
+/// paths only ever consume `artwork_path`; encoding a 500 KB cover per file
+/// for a 10,000-file drive import was hundreds of MB of dead JSON weight.
+pub fn read_no_preview(path: &str) -> PendingImport {
+    read_with(path, false)
+}
+
+fn read_with(path: &str, with_preview: bool) -> PendingImport {
     let fallback_title = Path::new(path)
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -134,10 +147,12 @@ pub fn read(path: &str) -> PendingImport {
                 .map(|m| m.as_str().to_string())
                 .unwrap_or_else(|| "image/jpeg".into());
             item.artwork_path = cache_artwork(data, &mime);
-            item.artwork_data_url = Some(format!(
-                "data:{mime};base64,{}",
-                base64::engine::general_purpose::STANDARD.encode(data)
-            ));
+            if with_preview {
+                item.artwork_data_url = Some(format!(
+                    "data:{mime};base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(data)
+                ));
+            }
         }
     }
 

@@ -145,6 +145,10 @@ int gpod_track_at(GpodDBRef dbRef, int index, GpodTrackInfo* outInfo) {
     return 1;
 }
 
+void gpod_track_info_for(GpodTrackRef ref, GpodTrackInfo* outInfo) {
+    fill_info((Itdb_Track*)ref, outInfo);
+}
+
 void gpod_free_track_info(GpodTrackInfo* info) {
     if (!info) return;
     free(info->title);
