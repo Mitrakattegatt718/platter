@@ -480,18 +480,25 @@ pub struct JobSummary {
     pub failures: Vec<String>,
 }
 
-/// Drains the queue into work for one run.
-pub fn take_work(queue: &mut Queue) -> Vec<WorkItem> {
+/// Copies the queue into work for one run, with the row id each item came
+/// from — that id is what per-item status events are addressed to, and index
+/// alone would not survive a row being removed while the job runs.
+pub fn take_work(queue: &mut Queue) -> (Vec<u64>, Vec<WorkItem>) {
     queue
         .items
         .iter()
-        .map(|s| WorkItem {
-            src: s.item.src.clone(),
-            dst_stem: s.item.dst_stem.clone(),
-            cue: s.item.cue.clone(),
-            probe: Some(s.probe.clone()),
+        .map(|s| {
+            (
+                s.id,
+                WorkItem {
+                    src: s.item.src.clone(),
+                    dst_stem: s.item.dst_stem.clone(),
+                    cue: s.item.cue.clone(),
+                    probe: Some(s.probe.clone()),
+                },
+            )
         })
-        .collect()
+        .unzip()
 }
 
 pub fn next_job_id(queue: &Queue) -> u64 {

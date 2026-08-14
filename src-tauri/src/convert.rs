@@ -1520,6 +1520,10 @@ pub trait ConvertObserver: Sync {
     /// sources whose duration is unknown — there is no denominator.
     fn file_progress(&self, _index: usize, _fraction: f64) {}
     fn log(&self, _level: &'static str, _file: Option<&str>, _line: &str) {}
+    /// Outcome of one item, by its index in the batch. Separate from
+    /// `finished`, which carries a running count and cannot identify the row
+    /// it belongs to.
+    fn item_done(&self, _index: usize, _outcome: &Prepared) {}
     fn finished(&self, _done: usize, _name: &str) {}
 }
 
@@ -1614,6 +1618,7 @@ pub fn prepare_batch(
                 let name = item.display();
                 obs.started(i, &name);
                 let prepared = prepare_one(item, out_dir, &art_cache, target, control, obs, i);
+                obs.item_done(i, &prepared);
                 *results[i].lock().unwrap() = Some(prepared);
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                 obs.finished(n, &name);

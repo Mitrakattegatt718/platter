@@ -848,34 +848,42 @@ pub fn cancel_convert(queue: State<'_, convert_job::SharedQueue>) -> Result<(), 
     Ok(())
 }
 
-/// Emits `convert:progress` and `convert:log` for a running job.
+/// Emits `convert:progress`, `convert:log` and `convert:items` for a running
+/// job.
 ///
-/// Log lines are batched: with `-progress pipe:1` and up to eight workers, one
-/// emit per line floods the IPC channel and freezes the webview.
+/// Log lines and item statuses are batched: with `-progress pipe:1` and up to
+/// eight workers, one emit per line floods the IPC channel and freezes the
+/// webview.
 struct JobEvents {
     app: AppHandle,
     job_id: u64,
     total: usize,
+    /// Queue row ids, index-aligned with the batch, so a per-item status can
+    /// name the row it belongs to.
+    ids: Vec<u64>,
     seq: AtomicUsize,
     done: AtomicUsize,
     /// Display name of the most recently started file.
     current: std::sync::Mutex<String>,
     pending: std::sync::Mutex<Vec<serde_json::Value>>,
+    pending_items: std::sync::Mutex<Vec<serde_json::Value>>,
     last_flush: std::sync::Mutex<std::time::Instant>,
     /// None until the first converting-phase emit, which must always land.
     last_progress: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 impl JobEvents {
-    fn new(app: AppHandle, job_id: u64, total: usize) -> Self {
+    fn new(app: AppHandle, job_id: u64, ids: Vec<u64>, total: usize) -> Self {
         Self {
             app,
             job_id,
             total,
+            ids,
             seq: AtomicUsize::new(0),
             done: AtomicUsize::new(0),
             current: std::sync::Mutex::new(String::new()),
             pending: std::sync::Mutex::new(Vec::new()),
+            pending_items: std::sync::Mutex::new(Vec::new()),
             last_flush: std::sync::Mutex::new(std::time::Instant::now()),
             last_progress: std::sync::Mutex::new(None),
         }
@@ -920,27 +928,51 @@ impl JobEvents {
         self.maybe_flush(false);
     }
 
+    /// Status of one batch item, addressed by its index in the batch.
+    fn push_status(&self, index: usize, status: &'static str, detail: Option<&str>) {
+        let Some(&id) = self.ids.get(index) else {
+            return;
+        };
+        self.push_status_id(id, status, detail);
+    }
+
+    fn push_status_id(&self, id: u64, status: &'static str, detail: Option<&str>) {
+        self.pending_items.lock().unwrap().push(serde_json::json!({
+            "id": id,
+            "status": status,
+            "detail": detail,
+        }));
+        self.maybe_flush(false);
+    }
+
     fn maybe_flush(&self, force: bool) {
         let mut last = self.last_flush.lock().unwrap();
         if !force && last.elapsed() < std::time::Duration::from_millis(120) {
             return;
         }
         let lines: Vec<_> = std::mem::take(&mut *self.pending.lock().unwrap());
+        let updates: Vec<_> = std::mem::take(&mut *self.pending_items.lock().unwrap());
         *last = std::time::Instant::now();
         drop(last);
-        if lines.is_empty() {
-            return;
+        if !lines.is_empty() {
+            let _ = self.app.emit(
+                "convert:log",
+                serde_json::json!({ "jobId": self.job_id, "lines": lines }),
+            );
         }
-        let _ = self.app.emit(
-            "convert:log",
-            serde_json::json!({ "jobId": self.job_id, "lines": lines }),
-        );
+        if !updates.is_empty() {
+            let _ = self.app.emit(
+                "convert:items",
+                serde_json::json!({ "jobId": self.job_id, "updates": updates }),
+            );
+        }
     }
 }
 
 impl convert::ConvertObserver for JobEvents {
-    fn started(&self, _index: usize, name: &str) {
+    fn started(&self, index: usize, name: &str) {
         *self.current.lock().unwrap() = name.to_string();
+        self.push_status(index, "converting", None);
         self.emit_progress("converting", Some(0.0));
     }
 
@@ -950,6 +982,16 @@ impl convert::ConvertObserver for JobEvents {
 
     fn log(&self, level: &'static str, file: Option<&str>, line: &str) {
         self.push_line(level, file, line);
+    }
+
+    fn item_done(&self, index: usize, outcome: &convert::Prepared) {
+        match outcome {
+            convert::Prepared::Ready(_) => self.push_status(index, "converted", None),
+            convert::Prepared::Rejected(reason) => {
+                self.push_status(index, "failed", Some(reason.as_str()))
+            }
+            convert::Prepared::Cancelled => self.push_status(index, "cancelled", None),
+        }
     }
 
     fn finished(&self, done: usize, _name: &str) {
@@ -980,7 +1022,7 @@ pub async fn convert_start(
         }
 
         // Everything the run needs, lifted out under one short lock.
-        let (work, control, job_id) = {
+        let ((ids, work), control, job_id) = {
             let mut q = queue.lock().unwrap();
             if q.is_empty() {
                 return Err("Nothing to convert — add some files first.".into());
@@ -999,7 +1041,7 @@ pub async fn convert_start(
             convert_job::Destination::Ipod => convert::fresh_out_dir(),
         };
 
-        let events = JobEvents::new(app.clone(), job_id, work.len());
+        let events = JobEvents::new(app.clone(), job_id, ids.clone(), work.len());
         events.push_line(
             "cmd",
             None,
@@ -1018,16 +1060,24 @@ pub async fn convert_start(
         let mut converted = 0usize;
         let mut failures = Vec::new();
         let mut ready: Vec<String> = Vec::new();
-        for (item, outcome) in work.iter().zip(&prepared) {
+        // Row ids for `ready`, index-aligned with it, so the import's own
+        // per-item outcomes can be reported against the right rows.
+        let mut ready_ids: Vec<u64> = Vec::new();
+        for ((item, outcome), &id) in work.iter().zip(&prepared).zip(&ids) {
             match outcome {
                 convert::Prepared::Ready(path) => {
                     converted += 1;
                     ready.push(path.to_string_lossy().into_owned());
+                    ready_ids.push(id);
                 }
                 convert::Prepared::Rejected(reason) => {
                     failures.push(format!("{}: {reason}", item.display()));
                 }
-                convert::Prepared::Cancelled => {}
+                // Cancelled before it ever started: no worker touched it, so
+                // no status was emitted for it either.
+                convert::Prepared::Cancelled => {
+                    events.push_status_id(id, "cancelled", None);
+                }
             }
         }
         let output_bytes = convert_job::output_bytes(&prepared);
@@ -1055,6 +1105,9 @@ pub async fn convert_start(
                 .finishing
                 .store(true, Ordering::Relaxed);
             events.push_line("info", None, "Importing into the iPod library…");
+            for &id in &ready_ids {
+                events.push_status_id(id, "importing", None);
+            }
             events.maybe_flush(true);
             let _ = app.emit(
                 "convert:progress",
@@ -1078,11 +1131,23 @@ pub async fn convert_start(
             summary.output_dir = None;
             match result {
                 Ok(r) => {
+                    // failed_indices indexes the submitted items, which are
+                    // index-aligned with `ready` and so with `ready_ids`.
+                    for (i, &id) in ready_ids.iter().enumerate() {
+                        if r.failed_indices.contains(&i) {
+                            events.push_status_id(id, "failed", Some("Import failed"));
+                        } else {
+                            events.push_status_id(id, "imported", None);
+                        }
+                    }
                     summary.converted = r.imported;
                     summary.failures.extend(r.failures);
                     summary.failed = summary.failures.len();
                 }
                 Err(e) => {
+                    for &id in &ready_ids {
+                        events.push_status_id(id, "failed", Some(e.as_str()));
+                    }
                     summary.failures.push(e);
                     summary.failed = summary.failures.len();
                 }
