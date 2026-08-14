@@ -6,6 +6,7 @@ import type {
   FormatOption,
   ImportResult,
   JobSummary,
+  LibraryPatch,
   LibrarySnapshot,
   PendingImport,
   SourceRow,
@@ -42,14 +43,23 @@ export const api = {
     }),
   importFiles: (paths: string[]) =>
     invoke<ImportResult>("import_files", { paths }),
+  /* Mutations answer with a LibraryPatch — just the touched tracks — rather
+   * than a full snapshot. At tens of thousands of tracks, re-shipping the
+   * whole library over JSON IPC per edit froze the UI for its serialization,
+   * transfer and parse, and replacing every Track object also invalidated
+   * every identity-keyed cache (search haystacks, memo'd rows) at once. */
   updateTrack: (id: string, fields: TrackFields) =>
-    invoke<LibrarySnapshot>("update_track", { id, fields }),
+    invoke<LibraryPatch>("update_track", { id, fields }),
   setField: (ids: string[], field: BulkField, value: string) =>
-    invoke<LibrarySnapshot>("set_field", { ids, field, value }),
+    invoke<LibraryPatch>("set_field", { ids, field, value }),
+  /** All named fields stamped in one lock take and one round-trip — the bulk
+   * panel used to loop set_field per changed field. */
+  setFields: (ids: string[], fields: [BulkField, string][]) =>
+    invoke<LibraryPatch>("set_fields", { ids, fields }),
   setArtwork: (ids: string[], imagePath: string) =>
-    invoke<LibrarySnapshot>("set_artwork", { ids, imagePath }),
+    invoke<LibraryPatch>("set_artwork", { ids, imagePath }),
   removeTracks: (ids: string[]) =>
-    invoke<LibrarySnapshot>("remove_tracks", { ids }),
+    invoke<LibraryPatch>("remove_tracks", { ids }),
   getArtwork: (id: string, size: number) =>
     invoke<string | null>("get_artwork", { id, size }),
 
@@ -71,10 +81,32 @@ export const api = {
  * explicitly. Both maps are FIFO-capped: scrolling a several-thousand-album
  * library must not grow them (and the base64 strings they hold) without
  * bound. Maps iterate in insertion order, so eviction just deletes the
- * oldest keys seen first. */
+ * oldest keys seen first.
+ *
+ * Fetches run through a small scheduler rather than firing invoke() on mount:
+ * every get_artwork serializes on the backend's single library mutex, so a
+ * fling-scroll through thousands of album headers used to enqueue an
+ * unbounded FIFO of extractions — the rows on screen were served LAST, after
+ * every row scrolled past. Now at most ART_CONCURRENCY are in flight, pending
+ * work dispatches newest-first (what's on screen went in last), and a request
+ * whose every thumb unmounted before dispatch is dropped without the IPC
+ * round-trip. */
 const ART_CACHE_LIMIT = 1500;
+const ART_CONCURRENCY = 5;
 const artworkPromises = new Map<string, Promise<string | null>>();
 const artworkResolved = new Map<string, string | null>();
+/** Live subscriber count per key — retained by mounted thumbs. */
+const artInterest = new Map<string, number>();
+
+interface PendingArt {
+  key: string;
+  id: string;
+  size: number;
+  promise: Promise<string | null>;
+  resolve: (url: string | null) => void;
+}
+const artQueue: PendingArt[] = [];
+let artInFlight = 0;
 
 function trimArtworkCaches() {
   if (artworkPromises.size <= ART_CACHE_LIMIT) return;
@@ -86,24 +118,78 @@ function trimArtworkCaches() {
   }
 }
 
+function pumpArtQueue() {
+  while (artInFlight < ART_CONCURRENCY && artQueue.length > 0) {
+    const next = artQueue.pop()!; // LIFO: most recently requested first
+    // Invalidated while queued — resolve without publishing; the artVersion
+    // bump already told mounted thumbs to re-request.
+    if (artworkPromises.get(next.key) !== next.promise) {
+      next.resolve(null);
+      continue;
+    }
+    // Nobody is looking any more (scrolled past before dispatch): skip the
+    // backend call entirely, and forget the promise so a future mount
+    // fetches fresh.
+    if (!(artInterest.get(next.key) ?? 0)) {
+      artworkPromises.delete(next.key);
+      next.resolve(null);
+      continue;
+    }
+    artInFlight++;
+    api
+      .getArtwork(next.id, next.size)
+      .then(
+        (url) => {
+          // Only publish if this fetch is still the current one — an
+          // invalidation while it was in flight means the result is stale.
+          if (artworkPromises.get(next.key) === next.promise) {
+            artworkResolved.set(next.key, url);
+          }
+          next.resolve(url);
+        },
+        () => {
+          // A rejection is transient (IPC hiccup, contention), not "no art".
+          // Dropping the promise lets the next request retry; publishing null
+          // would make the cover missing for the whole session.
+          if (artworkPromises.get(next.key) === next.promise) {
+            artworkPromises.delete(next.key);
+          }
+          next.resolve(null);
+        },
+      )
+      .finally(() => {
+        artInFlight--;
+        pumpArtQueue();
+      });
+  }
+}
+
+/** A mounted thumb's declaration of interest — pair every retain with a
+ * release in the effect cleanup, or queued fetches stop being droppable. */
+export function retainArtwork(id: string, size: number) {
+  const key = `${id}@${size}`;
+  artInterest.set(key, (artInterest.get(key) ?? 0) + 1);
+}
+
+export function releaseArtwork(id: string, size: number) {
+  const key = `${id}@${size}`;
+  const n = (artInterest.get(key) ?? 0) - 1;
+  if (n <= 0) artInterest.delete(key);
+  else artInterest.set(key, n);
+}
+
 export function cachedArtwork(id: string, size: number): Promise<string | null> {
   const key = `${id}@${size}`;
   let hit = artworkPromises.get(key);
   if (!hit) {
-    const fetch: Promise<string | null> = api
-      .getArtwork(id, size)
-      .catch(() => null)
-      .then((url) => {
-        // Only publish if this fetch is still the current one — an
-        // invalidation while it was in flight means the result is stale.
-        if (artworkPromises.get(key) === fetch) {
-          artworkResolved.set(key, url);
-        }
-        return url;
-      });
-    artworkPromises.set(key, fetch);
+    let resolve!: (url: string | null) => void;
+    hit = new Promise<string | null>((r) => {
+      resolve = r;
+    });
+    artworkPromises.set(key, hit);
     trimArtworkCaches();
-    hit = fetch;
+    artQueue.push({ key, id, size, promise: hit, resolve });
+    pumpArtQueue();
   }
   return hit;
 }

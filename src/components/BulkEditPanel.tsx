@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   AlertDialog,
@@ -59,13 +59,15 @@ const FIELD_LABELS: Record<BulkField, string> = {
 export function BulkEditPanel({
   tracks,
   busy,
-  onSetField,
+  onSetFields,
   onSetArtwork,
   onRemove,
 }: {
   tracks: Track[];
   busy: boolean;
-  onSetField: (field: BulkField, value: string) => Promise<unknown> | void;
+  /** Every changed field lands in ONE backend call — one lock take, one
+   * IPC round-trip, one patch — instead of a call per field. */
+  onSetFields: (fields: [BulkField, string][]) => Promise<unknown> | void;
   onSetArtwork: (imagePath: string) => void;
   onRemove: () => void;
 }) {
@@ -88,22 +90,32 @@ export function BulkEditPanel({
   async function apply() {
     if (changed.length === 0 || busy || applying) return;
     setApplying(true);
-    // Sequential, not parallel: each set_field returns a fresh snapshot and
-    // the last one to land wins — overlapping runs would race the UI state.
-    for (const field of changed) {
-      await onSetField(field, draft[field]);
-    }
+    await onSetFields(changed.map((field) => [field, draft[field]]));
     setApplying(false);
   }
 
-  const artworkCount = tracks.filter((t) => t.hasArtwork).length;
+  // Memoized on the selection: these are full passes over it, and this panel
+  // re-renders on every keystroke in its inputs — with a select-all-scale
+  // selection the recounts were input latency, paid exactly while typing.
+  const artworkCount = useMemo(
+    () => tracks.filter((t) => t.hasArtwork).length,
+    [tracks],
+  );
 
   // A cover is only shown when the whole selection is one album. Painting the
   // first track's art across a mixed selection would imply it belongs to all
   // of them — and the button beside it replaces art on every selected track,
   // so that would be an actively misleading preview.
-  const sameAlbum = tracks.every((t) => albumKey(t) === albumKey(tracks[0]));
-  const artTrackId = sameAlbum ? tracks.find((t) => t.hasArtwork)?.id ?? null : null;
+  const artTrackId = useMemo(() => {
+    const sameAlbum = tracks.every((t) => albumKey(t) === albumKey(tracks[0]));
+    return sameAlbum ? tracks.find((t) => t.hasArtwork)?.id ?? null : null;
+  }, [tracks]);
+
+  const summary = useMemo(
+    () =>
+      `${summarize(tracks.map((t) => t.artist))} · ${summarize(tracks.map((t) => t.album))}`,
+    [tracks],
+  );
 
   async function pickArtwork() {
     const file = await openDialog({
@@ -124,10 +136,7 @@ export function BulkEditPanel({
       <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-5">
         <div>
           <h2 className="text-lg font-semibold">{tracks.length} Tracks Selected</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {summarize(tracks.map((t) => t.artist))} ·{" "}
-            {summarize(tracks.map((t) => t.album))}
-          </p>
+          <p className="mt-1 text-sm text-muted-foreground">{summary}</p>
         </div>
 
         <Field label="Artist" mixed={initial.artist === ""}>

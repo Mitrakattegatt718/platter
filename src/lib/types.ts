@@ -61,6 +61,17 @@ export interface LibrarySnapshot {
   capacity: Capacity | null;
 }
 
+/** What a mutation actually changed — folded into the frontend's track array
+ * in place of the full snapshot mutations used to return, so an edit's cost
+ * scales with what it touched instead of with the library. */
+export interface LibraryPatch {
+  /** Post-edit state of every surviving track the operation touched. */
+  updated: Track[];
+  /** Ids that no longer resolve — removed, or gone under us. */
+  removedIds: string[];
+  capacity: Capacity | null;
+}
+
 export interface VolumeInfo {
   path: string;
   isIpod: boolean;

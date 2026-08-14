@@ -5,7 +5,7 @@ import { ActivityHeatmap } from "@/components/ActivityHeatmap";
 import { ArtworkThumb } from "@/components/ArtworkThumb";
 import { Treemap } from "@/components/Treemap";
 import { readActivity } from "@/lib/activity";
-import { cachedArtwork } from "@/lib/api";
+import { cachedArtwork, releaseArtwork, retainArtwork } from "@/lib/api";
 import {
   computeStats,
   coverTrackIds,
@@ -82,9 +82,19 @@ function StatsBody({
   async function share() {
     // Resolve the card's covers through the shared artwork cache — same data
     // URLs the mosaic already fetched, so export doesn't re-hit the backend.
+    // Retained for the duration: the fetch scheduler drops queued requests
+    // nobody has declared interest in.
+    const fetchCover = async (id: string): Promise<string | null> => {
+      retainArtwork(id, 200);
+      try {
+        return await cachedArtwork(id, 200);
+      } finally {
+        releaseArtwork(id, 200);
+      }
+    };
     const urls = (
       await Promise.all(stats.topAlbums.slice(0, 5).map((a) =>
-        a.artTrackId ? cachedArtwork(a.artTrackId, 200) : Promise.resolve(null),
+        a.artTrackId ? fetchCover(a.artTrackId) : Promise.resolve(null),
       ))
     ).filter((u): u is string => u !== null);
     const blob = await renderShareCard(stats, deviceName, urls);

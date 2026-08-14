@@ -1,4 +1,4 @@
-import { memo, useRef, useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { CircleDashed, Circle, CheckCircle2 } from "lucide-react";
 import { Highlight } from "@/components/Highlight";
@@ -92,12 +92,24 @@ function TrackListImpl({
     overscan: 12,
   });
 
-  const selStateOf = (tracks: Track[]): SelState => {
-    let selected = 0;
-    for (const t of tracks) if (selection.has(t.id)) selected++;
-    if (selected === tracks.length) return "all";
-    return selected > 0 ? "some" : "none";
-  };
+  /** Selection state per header, computed once per (rows, selection) change.
+   * Inline recounting ran on EVERY render — including each hover-state change
+   * as the pointer crossed rows — and a genre group can hold tens of
+   * thousands of tracks. */
+  const selStates = useMemo(() => {
+    const selStateOf = (tracks: Track[]): SelState => {
+      let selected = 0;
+      for (const t of tracks) if (selection.has(t.id)) selected++;
+      if (selected === tracks.length) return "all";
+      return selected > 0 ? "some" : "none";
+    };
+    const map = new Map<string, SelState>();
+    for (const row of rows) {
+      if (row.kind === "artist") map.set(`ar:${row.group.id}`, selStateOf(row.group.tracks));
+      else if (row.kind === "album") map.set(`al:${row.album.id}`, selStateOf(row.album.tracks));
+    }
+    return map;
+  }, [rows, selection]);
 
   return (
     <div className="relative flex h-full min-w-0 flex-col">
@@ -158,7 +170,7 @@ function TrackListImpl({
                   <ArtistHeader
                     group={row.group}
                     collapsed={collapsedGroups.has(row.group.id)}
-                    selState={selStateOf(row.group.tracks)}
+                    selState={selStates.get(`ar:${row.group.id}`) ?? "none"}
                     hovered={hoveredGroup === groupId}
                     query={searchQuery}
                     onToggle={onToggleGroup}
@@ -169,7 +181,7 @@ function TrackListImpl({
                     album={row.album}
                     first={row.first}
                     collapsed={collapsedAlbums.has(row.album.id)}
-                    selState={selStateOf(row.album.tracks)}
+                    selState={selStates.get(`al:${row.album.id}`) ?? "none"}
                     hovered={hoveredGroup === groupId}
                     query={searchQuery}
                     onToggle={onToggleAlbum}

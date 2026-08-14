@@ -232,6 +232,71 @@ export function groupTracks(
   return orderGroups(groups, sort, (g) => newestDate(g.tracks), (g) => g.title);
 }
 
+/** Narrows an already-grouped, already-sorted structure to the tracks
+ * matching `search`. This is the per-keystroke path: groupTracks pays the
+ * Intl.Collator sorts, which a query can never reorder, so a keystroke costs
+ * one linear haystack scan instead of re-sorting the whole library. Filtering
+ * preserves order; empty albums and groups drop out; per-album art fields are
+ * recomputed from the filtered set so header counts match what's shown. */
+export function filterGroups(groups: TrackGroup[], search: string): TrackGroup[] {
+  if (!search) return groups;
+  const lowered = search.toLowerCase();
+  const out: TrackGroup[] = [];
+
+  for (const group of groups) {
+    if (group.albums) {
+      let albums: AlbumSubgroup[] | null = null;
+      let groupTracksChanged = false;
+      const keptAlbums: AlbumSubgroup[] = [];
+      const keptTracks: Track[] = [];
+      for (const album of group.albums) {
+        const tracks = album.tracks.filter((t) => matchesLower(t, lowered));
+        if (tracks.length === album.tracks.length) {
+          keptAlbums.push(album);
+          for (const t of tracks) keptTracks.push(t);
+          continue;
+        }
+        groupTracksChanged = true;
+        if (tracks.length === 0) continue;
+        keptAlbums.push({
+          ...album,
+          tracks,
+          artTrackId: tracks.find((t) => t.hasArtwork)?.id ?? null,
+          missingArtCount: tracks.filter((t) => !t.hasArtwork).length,
+        });
+        for (const t of tracks) keptTracks.push(t);
+      }
+      if (keptAlbums.length === 0) continue;
+      albums = keptAlbums;
+      // Reuse the original group object when nothing inside it was filtered —
+      // header memos and collapse state then see a stable identity.
+      if (!groupTracksChanged && keptAlbums.length === group.albums.length) {
+        out.push(group);
+      } else {
+        out.push({
+          ...group,
+          tracks: keptTracks,
+          albums,
+          artTrackId: keptAlbums.find((a) => a.artTrackId !== null)?.artTrackId ?? null,
+        });
+      }
+    } else {
+      const tracks = group.tracks.filter((t) => matchesLower(t, lowered));
+      if (tracks.length === 0 && group.id !== "all") continue;
+      out.push(
+        tracks.length === group.tracks.length
+          ? group
+          : {
+              ...group,
+              tracks,
+              artTrackId: tracks.find((t) => t.hasArtwork)?.id ?? null,
+            },
+      );
+    }
+  }
+  return out;
+}
+
 /** One entry per rendered line, in render order — the virtualized list, the
  * shift-click range logic and "selected in sidebar order" all walk this. */
 /** Every row carries its section id: the virtualized list renders rows as

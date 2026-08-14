@@ -34,20 +34,25 @@ import { PermissionBanner, PermissionPrimer } from "@/components/PermissionPrime
 import { ProgressBanner } from "@/components/ProgressBanner";
 import { ViewTabs } from "@/components/ViewTabs";
 import { recordActivity } from "@/lib/activity";
+import { Toaster } from "@/components/Toaster";
 import { TrackEditPanel } from "@/components/TrackEditPanel";
 import { TrackList } from "@/components/TrackList";
 import { api, invalidateArtwork } from "@/lib/api";
 import {
+  filterGroups,
   flattenRows,
   groupTracks,
   visibleTrackIds,
   type AlbumSubgroup,
   type TrackGroup,
 } from "@/lib/grouping";
+import { notifyIfBackground } from "@/lib/notify";
+import { toast, toastError } from "@/lib/toast";
 import type {
   AppView,
   ImportOutcome,
   ImportResult,
+  LibraryPatch,
   LibrarySnapshot,
   PendingImport,
   Progress,
@@ -185,12 +190,17 @@ export default function App() {
     getCurrentWindow().setTitle(title).catch(() => {});
   }, [snapshot.mountPoint]);
 
-  // Fold each connected snapshot into the per-day activity log feeding the
-  // Stats heatmap — recording here means days fill in even if the Stats
-  // view is never opened on a given sync.
+  // Fold each connect into the per-day activity log feeding the Stats
+  // heatmap — recording here means days fill in even if the Stats view is
+  // never opened on a given sync. Keyed on the mount point, not the whole
+  // snapshot: play counts only ever change when a device connects (libgpod
+  // merges Play Counts during itdb_parse), so re-scanning every track and
+  // re-writing localStorage after each metadata edit was pure overhead.
   useEffect(() => {
-    if (snapshot.mountPoint) recordActivity(snapshot.tracks, snapshot.mountPoint);
-  }, [snapshot]);
+    if (snapshot.mountPoint) {
+      recordActivity(snapshotRef.current.tracks, snapshot.mountPoint);
+    }
+  }, [snapshot.mountPoint]);
 
   // The window starts hidden (tauri.conf.json) so launch never flashes an
   // unpainted white surface; show it once React has committed a frame.
@@ -232,11 +242,61 @@ export default function App() {
     setSelection((prev) => new Set([...prev].filter((id) => alive.has(id))));
   }, []);
 
-  // Progress events from imports and tag reads.
+  /** Folds a mutation's patch into the existing track array. Untouched Track
+   * objects keep their identity, which is what keeps the search haystacks,
+   * memo'd rows and grouping caches warm — the point of patches over full
+   * snapshots. */
+  const applyPatch = useCallback((patch: LibraryPatch) => {
+    const updated = new Map(patch.updated.map((t) => [t.id, t]));
+    const removed = new Set(patch.removedIds);
+    setSnapshot((prev) => ({
+      ...prev,
+      tracks:
+        removed.size > 0
+          ? prev.tracks
+              .filter((t) => !removed.has(t.id))
+              .map((t) => updated.get(t.id) ?? t)
+          : prev.tracks.map((t) => updated.get(t.id) ?? t),
+      capacity: patch.capacity ?? prev.capacity,
+    }));
+    if (removed.size > 0) {
+      setSelection((prev) => new Set([...prev].filter((id) => !removed.has(id))));
+    }
+  }, []);
+
+  // Progress events from imports and tag reads. A listen() that fails to
+  // subscribe is not benign — the progress banner would just never appear —
+  // so it surfaces instead of vanishing into the webview console.
   useEffect(() => {
     const unlisten = listen<Progress>("progress", (e) => setProgress(e.payload));
+    unlisten.catch((e) =>
+      toastError("Progress updates unavailable", String(e)),
+    );
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then(
+        (fn) => fn(),
+        () => {},
+      );
+    };
+  }, []);
+
+  // The backend writes edits to the device on a short idle timer. When that
+  // background save fails (device unplugged without eject, full or failing
+  // disk), the user must hear about it — their edits exist only in memory.
+  useEffect(() => {
+    const unlisten = listen<string>("library:flush-failed", (e) => {
+      // Sticky: a failed save loses data if it scrolls away unseen.
+      toast("error", "Couldn't save changes to the iPod", {
+        detail: e.payload,
+        sticky: true,
+      });
+    });
+    unlisten.catch(() => {});
+    return () => {
+      unlisten.then(
+        (fn) => fn(),
+        () => {},
+      );
     };
   }, []);
 
@@ -245,7 +305,18 @@ export default function App() {
       if (!result) return { ok: false, failedIndices: [] };
       applySnapshot(result.snapshot);
       if (result.failures.length > 0) {
-        setLastError(result.failures.join("\n"));
+        setLastError(summarizeFailures(result.failures));
+        void notifyIfBackground(
+          "Import finished with problems",
+          `${result.imported} imported, ${result.failures.length} failed.`,
+        );
+      } else if (result.imported > 0) {
+        // A drive-scale import runs long enough that its owner has switched
+        // apps; in the foreground this stays silent (the list itself shows).
+        void notifyIfBackground(
+          "Import finished",
+          `${result.imported} song${result.imported === 1 ? "" : "s"} added to the iPod.`,
+        );
       }
       return { ok: result.failures.length === 0, failedIndices: result.failedIndices };
     },
@@ -272,8 +343,14 @@ export default function App() {
         setIsDropTarget(false);
       }
     });
+    unlisten.catch((e) =>
+      toastError("Drag-and-drop import unavailable", String(e)),
+    );
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then(
+        (fn) => fn(),
+        () => {},
+      );
     };
   }, [run, handleImportResult]);
 
@@ -319,9 +396,18 @@ export default function App() {
     applySnapshot(result ?? EMPTY_SNAPSHOT);
   }, [run, applySnapshot]);
 
+  /** Grouped and sorted WITHOUT the search query. Sorting is the expensive
+   * half (Intl.Collator over every track), and a keystroke can't change the
+   * order of anything — so the sort runs only when the library, grouping or
+   * sort mode change, and each keystroke below pays one linear filter. */
+  const groupedAll = useMemo(
+    () => groupTracks(snapshot.tracks, grouping, sort, ""),
+    [snapshot.tracks, grouping, sort],
+  );
+
   const groups = useMemo(
-    () => groupTracks(snapshot.tracks, grouping, sort, deferredSearch),
-    [snapshot.tracks, grouping, sort, deferredSearch],
+    () => filterGroups(groupedAll, deferredSearch),
+    [groupedAll, deferredSearch],
   );
 
   const rows = useMemo(
@@ -570,24 +656,24 @@ export default function App() {
                   busy={busy}
                   onSave={(fields) =>
                     run(api.updateTrack(selectedTracks[0].id, fields)).then(
-                      (s) => s && applySnapshot(s),
+                      (p) => p && applyPatch(p),
                     )
                   }
                   onSetArtwork={(path) => {
                     const ids = [selectedTracks[0].id];
-                    run(api.setArtwork(ids, path)).then((s) => {
-                      if (s) {
+                    run(api.setArtwork(ids, path)).then((p) => {
+                      if (p) {
                         invalidateArtwork(ids);
-                        applySnapshot(s);
+                        applyPatch(p);
                       }
                     });
                   }}
                   onRemove={() => {
                     const ids = [selectedTracks[0].id];
-                    run(api.removeTracks(ids)).then((s) => {
-                      if (s) {
+                    run(api.removeTracks(ids)).then((p) => {
+                      if (p) {
                         invalidateArtwork(ids);
-                        applySnapshot(s);
+                        applyPatch(p);
                       }
                     });
                   }}
@@ -597,26 +683,26 @@ export default function App() {
                   key={selectionKey}
                   tracks={selectedTracks}
                   busy={busy}
-                  onSetField={(field, value) =>
-                    run(api.setField(selectedTracks.map((t) => t.id), field, value)).then(
-                      (s) => s && applySnapshot(s),
+                  onSetFields={(fields) =>
+                    run(api.setFields(selectedTracks.map((t) => t.id), fields)).then(
+                      (p) => p && applyPatch(p),
                     )
                   }
                   onSetArtwork={(path) => {
                     const ids = selectedTracks.map((t) => t.id);
-                    run(api.setArtwork(ids, path)).then((s) => {
-                      if (s) {
+                    run(api.setArtwork(ids, path)).then((p) => {
+                      if (p) {
                         invalidateArtwork(ids);
-                        applySnapshot(s);
+                        applyPatch(p);
                       }
                     });
                   }}
                   onRemove={() => {
                     const ids = selectedTracks.map((t) => t.id);
-                    run(api.removeTracks(ids)).then((s) => {
-                      if (s) {
+                    run(api.removeTracks(ids)).then((p) => {
+                      if (p) {
                         invalidateArtwork(ids);
-                        applySnapshot(s);
+                        applyPatch(p);
                       }
                     });
                   }}
@@ -709,7 +795,22 @@ export default function App() {
 
       <ErrorDialog error={lastError} onDismiss={() => setLastError(null)} />
       {showPermPrimer && <PermissionPrimer onDecision={decidePermPrimer} />}
+      <Toaster />
     </div>
+  );
+}
+
+/** A 10,000-file drive import can fail 500 ways; the dialog must summarize,
+ * not scroll a wall. Count first, a preview of the causes, and the tail
+ * elided. */
+function summarizeFailures(failures: string[]): string {
+  const PREVIEW = 20;
+  if (failures.length <= PREVIEW) return failures.join("\n");
+  const rest = failures.length - PREVIEW;
+  return (
+    `${failures.length} files couldn't be imported. First ${PREVIEW}:\n\n` +
+    failures.slice(0, PREVIEW).join("\n") +
+    `\n\n…and ${rest} more.`
   );
 }
 
@@ -741,7 +842,7 @@ function ErrorDialog({
           <AlertDialogTitle>
             {volumeAccess ? "macOS blocked access to the iPod" : "Error"}
           </AlertDialogTitle>
-          <AlertDialogDescription className="whitespace-pre-wrap">
+          <AlertDialogDescription className="max-h-72 overflow-y-auto whitespace-pre-wrap">
             {volumeAccess
               ? `${error}\n\nmacOS requires explicit permission to read removable drives. Open System Settings and enable Platter under Privacy & Security → Files & Folders → Removable Volumes (or grant Full Disk Access), then quit, relaunch and reconnect.\n\nRunning a dev build from a terminal? Grant that terminal the same access instead.`
               : error}
@@ -751,7 +852,14 @@ function ErrorDialog({
           {volumeAccess && (
             <Button
               variant="outline"
-              onClick={() => void api.openPrivacySettings().catch(() => {})}
+              onClick={() =>
+                void api.openPrivacySettings().catch(() =>
+                  toastError(
+                    "Couldn't open System Settings",
+                    "Open it from the Apple menu, then Privacy & Security → Files & Folders.",
+                  ),
+                )
+              }
             >
               Open System Settings
             </Button>

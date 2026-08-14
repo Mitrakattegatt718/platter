@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  filterGroups,
   flattenRows,
   groupTracks,
   matches,
@@ -240,5 +241,66 @@ describe("flattenRows", () => {
     // the selection-preserving logic both read this.
     const collapsed = flattenRows(groups, "artist", new Set([groups[0].id]), NO_COLLAPSE);
     expect(visibleTrackIds(collapsed)).toEqual([]);
+  });
+});
+
+describe("filterGroups — the per-keystroke narrowing pass", () => {
+  const tracks = [
+    track({ id: "1", title: "Taxman", artist: "Beatles", album: "Revolver", hasArtwork: true }),
+    track({ id: "2", title: "Eleanor Rigby", artist: "Beatles", album: "Revolver" }),
+    track({ id: "3", title: "Come Together", artist: "Beatles", album: "Abbey Road" }),
+    track({ id: "4", title: "Hello", artist: "Adele", album: "25" }),
+  ];
+
+  it("returns the same array identity for an empty query", () => {
+    const groups = groupTracks(tracks, "artist", "title", "");
+    expect(filterGroups(groups, "")).toBe(groups);
+  });
+
+  it("matches groupTracks' own filtered output for every grouping mode", () => {
+    // The contract that keeps this optimization honest: filtering an
+    // already-grouped structure must show the same tracks in the same order
+    // as grouping the filtered set, which is what the app used to do.
+    for (const grouping of ["artist", "album", "genre", "none"] as const) {
+      const direct = groupTracks(tracks, grouping, "title", "eleanor");
+      const narrowed = filterGroups(groupTracks(tracks, grouping, "title", ""), "eleanor");
+      expect(narrowed.map((g) => g.tracks.map((t) => t.id))).toEqual(
+        direct.map((g) => g.tracks.map((t) => t.id)),
+      );
+      expect(narrowed.map((g) => g.id)).toEqual(direct.map((g) => g.id));
+    }
+  });
+
+  it("drops albums and groups that no longer match", () => {
+    const groups = filterGroups(groupTracks(tracks, "artist", "title", ""), "taxman");
+    expect(groups).toHaveLength(1);
+    expect(groups[0].title).toBe("Beatles");
+    expect(groups[0].albums?.map((a) => a.title)).toEqual(["Revolver"]);
+    expect(groups[0].tracks.map((t) => t.id)).toEqual(["1"]);
+  });
+
+  it("recomputes album art fields from the filtered set", () => {
+    const groups = filterGroups(groupTracks(tracks, "artist", "title", ""), "eleanor");
+    const album = groups[0].albums![0];
+    // Track 1 (the one with art) is filtered out, so the album has no art
+    // track and one missing-art track — the header count must match rows.
+    expect(album.tracks.map((t) => t.id)).toEqual(["2"]);
+    expect(album.artTrackId).toBeNull();
+    expect(album.missingArtCount).toBe(1);
+  });
+
+  it("reuses group objects untouched by the filter", () => {
+    const groups = groupTracks(tracks, "artist", "title", "");
+    const narrowed = filterGroups(groups, "e");
+    // Every Beatles and Adele track matches "e", so both groups pass through
+    // with identity intact — what keeps memo'd headers from re-rendering.
+    expect(narrowed[0]).toBe(groups[0]);
+    expect(narrowed[1]).toBe(groups[1]);
+  });
+
+  it("keeps the single 'none' group even when nothing matches", () => {
+    const groups = filterGroups(groupTracks(tracks, "none", "title", ""), "zzz");
+    expect(groups).toHaveLength(1);
+    expect(groups[0].tracks).toHaveLength(0);
   });
 });

@@ -1,6 +1,13 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { Music } from "lucide-react";
-import { cachedArtwork, getArtVersion, resolvedArtwork, subscribeArt } from "@/lib/api";
+import {
+  cachedArtwork,
+  getArtVersion,
+  releaseArtwork,
+  resolvedArtwork,
+  retainArtwork,
+  subscribeArt,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 /** Album/track cover, fetched lazily from the backend as a data URL. Falls
@@ -44,11 +51,15 @@ export function ArtworkThumb({
     }
     let cancelled = false;
     setSrc(null);
+    // Retain/release lets the fetch scheduler skip requests every subscriber
+    // scrolled away from before they were dispatched.
+    retainArtwork(trackId, fetchSize);
     cachedArtwork(trackId, fetchSize).then((url) => {
       if (!cancelled) setSrc(url);
     });
     return () => {
       cancelled = true;
+      releaseArtwork(trackId, fetchSize);
     };
   }, [trackId, fetchSize, artVersion]);
 
