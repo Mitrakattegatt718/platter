@@ -98,6 +98,13 @@ pub struct Library {
     /// When the last mutation happened — the auto-flush thread waits for a
     /// short idle window so rapid edits coalesce into one iTunesDB write.
     last_dirty_at: Option<std::time::Instant>,
+    /// When the on-device backup pair was last refreshed, and how many saves
+    /// have gone by since. Both drive the refresh cadence in `save`.
+    last_backup_at: Option<std::time::Instant>,
+    saves_since_backup: u32,
+    /// Wakes the auto-flush thread. Held here rather than in a global so a
+    /// Library built for a test simply has nothing listening on it.
+    flush_signal: Arc<(Mutex<bool>, std::sync::Condvar)>,
 }
 
 /// Thumbnails kept in memory. 80px PNGs run 10-40 KB of base64 each, so this
@@ -110,8 +117,10 @@ unsafe impl Send for Library {}
 
 pub type SharedLibrary = Arc<Mutex<Library>>;
 
-pub fn new_shared() -> SharedLibrary {
-    let lib = Arc::new(Mutex::new(Library {
+/// A closed library with no auto-flush thread behind it. The app always wants
+/// `new_shared`; tests want writes to happen only where they ask for them.
+pub fn new_unmanaged() -> Library {
+    Library {
         db: None,
         mount_point: None,
         live_refs: HashSet::new(),
@@ -120,31 +129,57 @@ pub fn new_shared() -> SharedLibrary {
         art_gen: 0,
         dirty: false,
         last_dirty_at: None,
-    }));
+        last_backup_at: None,
+        saves_since_backup: 0,
+        flush_signal: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
+    }
+}
+
+pub fn new_shared() -> SharedLibrary {
+    let lib = Arc::new(Mutex::new(new_unmanaged()));
     spawn_auto_flush(lib.clone());
     lib
 }
 
-/// Polls every 500ms and flushes if the library has been dirty for >1.5s.
-/// Coalesces rapid edits (bulk tag writes, a flurry of metadata tweaks) into
-/// a single iTunesDB write, cutting flash wear and UI stalls. Runs for the
-/// app's lifetime; the lock is held only for the brief dirty check and the
-/// occasional flush.
+/// How long the library must sit untouched before an edit is written out.
+/// Coalesces rapid edits (bulk tag writes, a flurry of metadata tweaks) into a
+/// single iTunesDB write, cutting flash wear and UI stalls.
+const FLUSH_IDLE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Waits for `mark_dirty` to signal, lets the edits settle, then flushes.
+///
+/// It blocks on a condvar rather than polling: the previous version woke twice
+/// a second for the life of the process — taking the library lock each time —
+/// even with no iPod connected. Now an idle app costs nothing, and the thread
+/// never competes with an import for the mutex.
 fn spawn_auto_flush(lib: SharedLibrary) {
+    let signal = lib.lock().unwrap().flush_signal.clone();
     std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        let should_flush = {
-            let lib = lib.lock().unwrap();
-            lib.dirty
-                && lib
-                    .last_dirty_at
-                    .map(|t| t.elapsed() > std::time::Duration::from_millis(1500))
-                    .unwrap_or(false)
-        };
-        if should_flush {
-            let mut lib = lib.lock().unwrap();
-            let _ = lib.flush_if_dirty();
+        {
+            let (pending, cv) = &*signal;
+            let mut pending = pending.lock().unwrap_or_else(|e| e.into_inner());
+            while !*pending {
+                pending = cv.wait(pending).unwrap_or_else(|e| e.into_inner());
+            }
+            *pending = false;
         }
+
+        // Sleep out the idle window, re-reading it each time: an edit landing
+        // mid-wait pushes the deadline back, which is what does the coalescing.
+        loop {
+            let remaining = {
+                let lib = lib.lock().unwrap_or_else(|e| e.into_inner());
+                lib.last_dirty_at
+                    .and_then(|t| FLUSH_IDLE.checked_sub(t.elapsed()))
+            };
+            match remaining {
+                Some(wait) => std::thread::sleep(wait),
+                None => break,
+            }
+        }
+
+        let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = lib.flush_if_dirty();
     });
 }
 
@@ -165,6 +200,10 @@ impl Library {
         self.db = Some(db);
         self.mount_point = Some(mount_point.to_string());
         self.art_gen += 1;
+        // Capture the connect-time state before anything can overwrite it.
+        // Doing it here also makes the pair naturally consistent: nothing has
+        // been written yet, so the two files still agree with each other.
+        self.backup_pair();
         Ok(())
     }
 
@@ -189,6 +228,14 @@ impl Library {
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
         self.last_dirty_at = Some(std::time::Instant::now());
+        let (pending, cv) = &*self.flush_signal;
+        *pending.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        cv.notify_one();
+    }
+
+    /// True while edits are waiting to reach the device.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
     }
 
     /// Writes the iTunesDB only if there are unsaved changes.
@@ -199,19 +246,54 @@ impl Library {
         Ok(())
     }
 
+    /// Copies the iTunesDB and the device's Play Counts file aside, both at the
+    /// same instant and always before a write.
+    ///
+    /// The pairing is the point. Entries in `Play Counts` match iTunesDB tracks
+    /// **positionally**, and `itdb_write` deletes the file once it has merged
+    /// it — so an iTunesDB.bak restored next to a Play Counts from any other
+    /// moment silently attributes plays to the wrong tracks. Backing up one
+    /// without the other is worse than not backing up at all.
+    ///
+    /// Best-effort throughout: a device that has never been written has nothing
+    /// to copy, and a failed copy must not block the user's edit from saving.
+    fn backup_pair(&mut self) {
+        let Some(mount) = &self.mount_point else {
+            return;
+        };
+        let itunes = std::path::Path::new(mount).join("iPod_Control/iTunes");
+        for name in ["iTunesDB", "Play Counts"] {
+            let source = itunes.join(name);
+            if source.exists() {
+                let _ = std::fs::copy(&source, itunes.join(format!("{name}.bak")));
+            }
+        }
+        self.last_backup_at = Some(std::time::Instant::now());
+        self.saves_since_backup = 0;
+    }
+
+    /// The recovery point that matters is "the device as it was when you
+    /// connected", so the backup is taken at open. It is refreshed occasionally
+    /// afterwards to bound how much of a long session a restore would discard —
+    /// but not on every write, which on a Classic means copying tens of
+    /// megabytes over USB for each coalesced flush.
+    fn refresh_backup_if_stale(&mut self) {
+        const AFTER_SAVES: u32 = 20;
+        const AFTER: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+        let stale = self.saves_since_backup >= AFTER_SAVES
+            || self
+                .last_backup_at
+                .map(|t| t.elapsed() >= AFTER)
+                .unwrap_or(true);
+        if stale {
+            self.backup_pair();
+        }
+    }
+
     pub fn save(&mut self) -> Result<(), String> {
         let db = self.db.ok_or("No iPod library is open.")?;
-        // Best-effort backup: an interrupted gpod_write can corrupt the
-        // iTunesDB and brick the iPod's library. The on-device .bak is the
-        // simplest recovery point — a failed backup doesn't block the
-        // write (the user still wants their edit saved).
-        if let Some(mount) = &self.mount_point {
-            let db_path = std::path::Path::new(mount)
-                .join("iPod_Control/iTunes/iTunesDB");
-            let bak_path = std::path::Path::new(mount)
-                .join("iPod_Control/iTunes/iTunesDB.bak");
-            let _ = std::fs::copy(&db_path, &bak_path);
-        }
+        self.refresh_backup_if_stale();
+        self.saves_since_backup = self.saves_since_backup.saturating_add(1);
         let mut err: *mut std::os::raw::c_char = std::ptr::null_mut();
         if unsafe { gpod_write(db, &mut err) } == 0 {
             let msg = unsafe { take_c_string(err) }.unwrap_or_else(|| "unknown error".into());

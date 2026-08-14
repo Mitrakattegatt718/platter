@@ -7,10 +7,12 @@
 //! small worker pool on the mutex — a burst of get_artwork calls during a
 //! long import could stall the entire IPC runtime.
 
+use crate::app_icon::{self, AppIconInfo};
 use crate::convert;
 use crate::convert_job;
 use crate::gpod::*;
 use crate::library::{LibrarySnapshot, SharedLibrary};
+use crate::settings;
 use crate::tags::{self, PendingImport};
 use base64::Engine;
 use serde::Serialize;
@@ -92,6 +94,19 @@ pub struct VolumeInfo {
     /// None when the lookup fails (volume unmounted mid-scan, etc.).
     pub free_bytes: Option<u64>,
     pub total_bytes: Option<u64>,
+    /// From iPod_Control/Device/SysInfo. All None when the volume isn't an
+    /// iPod, or is one whose SysInfo is missing or names a model this libgpod
+    /// build doesn't have in its table (restored and hand-built devices).
+    pub family: Option<String>,
+    pub model: Option<String>,
+    pub generation: Option<String>,
+    /// True *only* for a device we positively identified as one this app
+    /// cannot manage: a Touch/iPhone/iPad (SQLite library libgpod can't
+    /// touch), or a 3rd/4th generation Shuffle (an iTunesSD layout this
+    /// libgpod doesn't produce). A 1st/2nd generation Shuffle *is* supported —
+    /// `gpod_write` emits its iTunesSD. An unidentified device is left alone
+    /// on purpose: a Classic with a wiped SysInfo has to stay connectable.
+    pub unsupported: bool,
 }
 
 fn volume_capacity(path: &std::path::Path) -> Option<(u64, u64)> {
@@ -111,16 +126,55 @@ pub async fn list_volumes() -> Result<Vec<VolumeInfo>, String> {
             .map(|e| {
                 let path = e.path();
                 let capacity = volume_capacity(&path);
+                let is_ipod = path.join("iPod_Control").exists();
+                // Only for actual iPods: probing reads a file per volume, and
+                // there is nothing to learn from a random USB stick.
+                let device = is_ipod.then(|| probe_device(&path.to_string_lossy()));
+                let identified = device.as_ref().filter(|d| d.identified);
                 VolumeInfo {
-                    is_ipod: path.join("iPod_Control").exists(),
+                    is_ipod,
                     path: path.to_string_lossy().into_owned(),
                     free_bytes: capacity.map(|c| c.0),
                     total_bytes: capacity.map(|c| c.1),
+                    family: identified.map(|d| d.family.clone()),
+                    model: identified.and_then(|d| d.model_name.clone()),
+                    generation: identified.and_then(|d| d.generation.clone()),
+                    unsupported: identified.is_some_and(|d| !d.supported),
                 }
             })
             .collect();
         volumes.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(volumes)
+    })
+    .await
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VolumeScan {
+    /// Tracks an import would pull in. Counts cue-split tracks individually,
+    /// because that is what lands on the device.
+    pub tracks: u32,
+    /// How many of those come from cue sheets. Worth separating in the UI:
+    /// they have to be rendered by ffmpeg before they can be imported, so a
+    /// drive that is mostly cue albums takes far longer than the count alone
+    /// suggests.
+    pub cue_tracks: u32,
+}
+
+/// Counts what importing `path` would bring in, touching no device. Runs the
+/// very same `convert::scan` the import runs, so the number shown is the
+/// number the user gets — a second, simpler counter here would be free to
+/// disagree with reality.
+#[tauri::command]
+pub async fn scan_volume(path: String) -> Result<VolumeScan, String> {
+    blocking(move || {
+        let items = convert::scan(&[path]);
+        let cue_tracks = items.iter().filter(|i| i.cue.is_some()).count() as u32;
+        Ok(VolumeScan {
+            tracks: items.len() as u32,
+            cue_tracks,
+        })
     })
     .await
 }
@@ -200,6 +254,29 @@ pub async fn open_privacy_settings() -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("Couldn't open System Settings: {e}"))?;
     Ok(())
+}
+
+/// The app-icon trio skips the `blocking()` pool: a base64 encode of four
+/// small PNGs, a sub-kilobyte file write and a hop to the main thread are all
+/// bounded work that never touches libgpod or the library mutex.
+#[tauri::command]
+pub async fn list_app_icons() -> Result<Vec<AppIconInfo>, String> {
+    Ok(app_icon::list())
+}
+
+#[tauri::command]
+pub async fn get_app_icon(app: AppHandle) -> Result<Option<String>, String> {
+    Ok(settings::load(&app).app_icon)
+}
+
+/// Applies first and persists only on success, so an id this build doesn't
+/// ship can never be written to the prefs file.
+#[tauri::command]
+pub async fn set_app_icon(app: AppHandle, id: Option<String>) -> Result<(), String> {
+    app_icon::apply(&app, id.as_deref())?;
+    let mut settings = settings::load(&app);
+    settings.app_icon = id;
+    settings::save(&app, &settings)
 }
 
 /// Tag reading is pure Rust with no shared state, so files parse on all
@@ -362,8 +439,8 @@ fn import_tracks_blocking(
     // the mutex through them would stall every artwork fetch in the UI.
     let (sources, prepare_failures, scratch_dir) = prepare_sources(app, &items);
 
-    let mut lib = lib.lock().unwrap();
-    let db = lib.db()?;
+    // Fail fast when nothing is connected, before doing any per-file work.
+    lib.lock().unwrap().db()?;
 
     let total = items.len();
     let mut imported = 0usize;
@@ -373,6 +450,24 @@ fn import_tracks_blocking(
         failures.push(message.clone());
         failed_indices.push(*index);
     }
+
+    // A converted source is a different file than the one whose tags were
+    // read; lossless formats lofty can't parse stage with duration 0, so
+    // recover it from the converted ALAC. Bitrate and sample rate belong
+    // to the converted stream either way, so they always come from there.
+    //
+    // This runs up front rather than per iteration below because lofty parses
+    // the whole file — it used to happen with the library mutex held, which is
+    // exactly the kind of work that must not block the UI.
+    let recovered: Vec<Option<tags::PendingImport>> = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let source = sources[index].as_ref()?;
+            let converted = *source != item.file_path;
+            (converted || item.duration_ms == 0).then(|| tags::read(source))
+        })
+        .collect();
 
     let throttle = ProgressThrottle::new(app);
     for (index, item) in items.iter().enumerate() {
@@ -385,19 +480,42 @@ fn import_tracks_blocking(
             index + 1 == total,
         );
 
-        // A converted source is a different file than the one whose tags were
-        // read; lossless formats lofty can't parse stage with duration 0, so
-        // recover it from the converted ALAC. Bitrate and sample rate belong
-        // to the converted stream either way, so they always come from there.
-        let converted = *source != item.file_path;
-        let probed = (converted || item.duration_ms == 0).then(|| tags::read(source));
-        let duration_ms = match &probed {
+        let probed = &recovered[index];
+        let duration_ms = match probed {
             Some(p) if item.duration_ms == 0 => p.duration_ms,
             _ => item.duration_ms,
         };
-        let (bitrate, sample_rate) = match &probed {
+        let (bitrate, sample_rate) = match probed {
             Some(p) => (p.bitrate, p.sample_rate),
             None => (item.bitrate, item.sample_rate),
+        };
+
+        // The lock is taken per file, not around the whole loop. Each
+        // gpod_import_track is a multi-megabyte copy over USB, and holding the
+        // mutex across all of them froze every artwork fetch and inspector edit
+        // for the duration of the import. Between files, other commands
+        // interleave.
+        //
+        // The db handle is re-resolved inside each iteration and never cached
+        // across an unlock: a close or eject in the gap frees it, and reusing
+        // the old pointer would be a use-after-free.
+        let lib = lib.lock().unwrap();
+        let db = match lib.db() {
+            Ok(db) => db,
+            // Disconnected mid-import: gpod_close freed the handle and every
+            // track added under it, so nothing that succeeded earlier is in
+            // the database any longer. Report the whole batch as failed
+            // rather than claiming a partial success that no longer exists.
+            Err(msg) => {
+                for (rest, remaining) in items.iter().enumerate() {
+                    if sources[rest].is_some() && !failed_indices.contains(&rest) {
+                        failures.push(format!("{}: {msg}", remaining.title));
+                        failed_indices.push(rest);
+                    }
+                }
+                imported = 0;
+                break;
+            }
         };
 
         let result: Result<GpodTrackRef, String> = (|| {
@@ -449,8 +567,12 @@ fn import_tracks_blocking(
                 failed_indices.push(index);
             }
         }
+        // Releasing here is the point of the whole restructure: the next file's
+        // copy waits behind anything the UI queued while this one ran.
+        drop(lib);
     }
 
+    let mut lib = lib.lock().unwrap();
     let saved = if imported > 0 {
         emit_progress(app, "Saving to iPod…", None);
         lib.save()
@@ -487,7 +609,7 @@ pub async fn import_files(
         let items = convert::scan(&paths);
         if items.is_empty() {
             return Err(
-                "No importable audio found. PodSync imports MP3 and M4A/AAC directly, \
+                "No importable audio found. Platter imports MP3 and M4A/AAC directly, \
                  and converts FLAC, WAV, AIFF, APE, WavPack, DSD and other lossless \
                  files (or .cue album images) to Apple Lossless for the iPod."
                     .into(),
