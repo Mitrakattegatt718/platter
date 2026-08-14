@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronsUpDown, HardDrive, Smartphone } from "lucide-react";
+import { Check, ChevronsUpDown, HardDrive, Smartphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -11,8 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { api } from "@/lib/api";
-import { formatBytes } from "@/lib/format";
-import { partitionVolumes, volumeLabel } from "@/lib/volumes";
+import { partitionVolumes, volumeCapacity, volumeLabel, volumeSubtitle } from "@/lib/volumes";
 import type { VolumeInfo } from "@/lib/types";
 
 /** The eject glyph. Lives here rather than in App because this menu is now the
@@ -24,12 +23,6 @@ function EjectIcon() {
       <line x1="5" y1="18" x2="19" y2="18" strokeLinecap="round" />
     </svg>
   );
-}
-
-/** Total size, not free space: it is the number that tells two devices apart
- * before either is connected, and unlike free space it does not move. */
-function capacityLabel(volume: VolumeInfo): string {
-  return volume.totalBytes === null ? "" : formatBytes(volume.totalBytes);
 }
 
 /** The connected device, as something you can act on. Replaces the static
@@ -52,11 +45,13 @@ export function DriveSelect({
   const [open, setOpen] = useState(false);
   const [volumes, setVolumes] = useState<VolumeInfo[]>([]);
 
-  // Fetched when the menu opens, never polled: list_volumes runs statvfs over
-  // every mount, and doing that on a timer would spin every attached disk to
-  // keep a closed menu warm.
+  // Fetched when the menu opens and whenever the connected volume changes,
+  // never polled: list_volumes runs statfs over every mount, and doing that on
+  // a timer would spin every attached disk to keep a closed menu warm. The
+  // mountPoint dependency is what lets the trigger draw the right icon before
+  // the menu has ever been opened.
   useEffect(() => {
-    if (!open) return;
+    if (!open && mountPoint === null) return;
     let alive = true;
     api
       .listVolumes()
@@ -65,31 +60,50 @@ export function DriveSelect({
     return () => {
       alive = false;
     };
-  }, [open]);
+  }, [open, mountPoint]);
 
   const { ipods, others } = partitionVolumes(volumes);
 
-  const row = (volume: VolumeInfo) => (
-    <DropdownMenuItem
-      key={volume.path}
-      // Positively identified as a device with no iTunesDB. Shown and
-      // disabled, not hidden — clicking through to a libgpod failure is not an
-      // answer, and hiding it reads as "PodSync didn't see my iPod".
-      disabled={volume.unsupported || busy}
-      title={
-        volume.unsupported
-          ? `${volume.model ?? "This device"} doesn't use an iTunesDB, so PodSync can't manage it`
-          : volume.path
-      }
-      onClick={() => void onConnect(volume.path)}
-    >
-      {volume.isIpod ? <Smartphone /> : <HardDrive />}
-      <span className="truncate">{volumeLabel(volume.path)}</span>
-      <span className="ml-auto shrink-0 pl-3 text-xs tabular-nums text-muted-foreground">
-        {volume.unsupported ? "Not supported" : capacityLabel(volume)}
-      </span>
-    </DropdownMenuItem>
-  );
+  // Unknown but mounted means the list hasn't arrived yet, and a library only
+  // ever opens on an iPod — so the phone is the better guess than the disk.
+  const connected = volumes.find((v) => v.path === mountPoint) ?? null;
+  const TriggerIcon =
+    mountPoint === null ? HardDrive : connected && !connected.isIpod ? HardDrive : Smartphone;
+
+  const row = (volume: VolumeInfo) => {
+    const isConnected = volume.path === mountPoint;
+    return (
+      <DropdownMenuItem
+        key={volume.path}
+        // Positively identified as a device with no iTunesDB. Shown and
+        // disabled, not hidden — clicking through to a libgpod failure is not
+        // an answer, and hiding it reads as "PodSync didn't see my iPod".
+        disabled={volume.unsupported || busy}
+        title={
+          volume.unsupported
+            ? `${volume.model ?? "This device"} doesn't use an iTunesDB, so PodSync can't manage it`
+            : volume.path
+        }
+        onClick={() => void onConnect(volume.path)}
+      >
+        {volume.isIpod ? <Smartphone /> : <HardDrive />}
+        <div className="flex min-w-0 flex-1 flex-col gap-px">
+          <div className="flex items-baseline gap-3">
+            <span className="truncate">{volumeLabel(volume.path)}</span>
+            <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
+              {volume.unsupported ? "Not supported" : volumeCapacity(volume)}
+            </span>
+          </div>
+          <span className="truncate text-xs text-muted-foreground/80">
+            {volumeSubtitle(volume)}
+          </span>
+        </div>
+        {isConnected && (
+          <ConnectedMark busy={busy} onEject={onEject} />
+        )}
+      </DropdownMenuItem>
+    );
+  };
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -101,14 +115,15 @@ export function DriveSelect({
             className="min-w-0"
             title={mountPoint ?? "No iPod connected"}
           >
-            <span className="truncate font-mono text-sm font-semibold">
+            <TriggerIcon />
+            <span className="truncate text-sm font-semibold">
               {mountPoint ? volumeLabel(mountPoint) : "No iPod"}
             </span>
             <ChevronsUpDown className="shrink-0 opacity-60" />
           </Button>
         }
       />
-      <DropdownMenuContent align="start" className="min-w-64">
+      <DropdownMenuContent align="start" className="min-w-80">
         {/* Each label lives INSIDE a group: the wrapper maps DropdownMenuLabel
             onto Base UI's GroupLabel, which reads group context and throws
             without one. */}
@@ -126,10 +141,36 @@ export function DriveSelect({
         )}
         {volumes.length > 0 && <DropdownMenuSeparator />}
         <DropdownMenuItem onClick={onConnectManually}>Connect&hellip;</DropdownMenuItem>
-        <DropdownMenuItem disabled={mountPoint === null || busy} onClick={onEject}>
-          <EjectIcon /> Eject
-        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/** The connected row's trailing slot: a tick that becomes an eject button
+ * under the pointer. Eject belongs to a specific device, so it lives on that
+ * device's row rather than as a standing menu entry that has to re-state which
+ * drive it would act on.
+ *
+ * Both events are stopped, not just the click: the enclosing menu item's own
+ * handler would otherwise reconnect the volume being ejected, and Base UI
+ * arms items on pointer-down. */
+function ConnectedMark({ busy, onEject }: { busy: boolean; onEject: () => void }) {
+  return (
+    <span className="relative ml-2 flex size-4 shrink-0 items-center justify-center">
+      <Check className="size-4 text-primary transition-opacity group-hover/dropdown-menu-item:opacity-0" />
+      <button
+        type="button"
+        disabled={busy}
+        className="absolute inset-0 flex items-center justify-center rounded-sm opacity-0 transition-opacity hover:text-primary focus-visible:opacity-100 disabled:pointer-events-none group-hover/dropdown-menu-item:opacity-100"
+        title="Disconnect and eject the iPod so you can safely unplug it"
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          onEject();
+        }}
+      >
+        <EjectIcon />
+      </button>
+    </span>
   );
 }
