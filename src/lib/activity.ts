@@ -13,7 +13,7 @@
  * share a calendar. */
 import type { Track } from "./types";
 
-const PREFIX = "podsync.activity.v1.";
+const PREFIX = "platter.activity.v1.";
 
 interface ActivityState {
   byDay: Record<string, number>;

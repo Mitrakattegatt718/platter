@@ -1,12 +1,12 @@
 # Building an LGPL ffmpeg for the bundle
 
-PodSync's Convert tab shells out to `ffmpeg` and `ffprobe`. To ship them inside
-`PodSync.app` — so nobody has to install Homebrew — they have to be staged as
+Platter's Convert tab shells out to `ffmpeg` and `ffprobe`. To ship them inside
+`Platter.app` — so nobody has to install Homebrew — they have to be staged as
 Tauri sidecars by `./stage-ffmpeg.sh`.
 
 **Homebrew's ffmpeg cannot be used for a release.** Verified on 8.1.2, its
 configure line contains `--enable-gpl --enable-version3` (it pulls in x264 and
-x265), and `ffmpeg -L` prints the GPLv3 text. The moment PodSync ships that
+x265), and `ffmpeg -L` prints the GPLv3 text. The moment Platter ships that
 binary it becomes a distributor of GPLv3 software: complete corresponding
 source to every recipient, no added restrictions, and no Mac App Store.
 

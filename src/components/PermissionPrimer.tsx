@@ -38,17 +38,17 @@ export function PermissionPrimer({
             render={
               <div className="flex flex-col gap-2">
                 <span>
-                  macOS blocks apps from removable drives by default. PodSync
+                  macOS blocks apps from removable drives by default. Platter
                   needs read and write access to the iPod&apos;s disk to open its
                   library database, sync play counts, and store artwork.
                 </span>
                 <span>
-                  In System Settings, enable PodSync under{" "}
+                  In System Settings, enable Platter under{" "}
                   <span className="font-medium text-foreground">
                     Privacy &amp; Security → Files &amp; Folders → Removable
                     Volumes
                   </span>{" "}
-                  (or grant Full Disk Access), then quit and relaunch PodSync
+                  (or grant Full Disk Access), then quit and relaunch Platter
                   once.
                 </span>
               </div>
@@ -88,7 +88,7 @@ export function PermissionBanner({
     >
       <ShieldAlert className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
       <span className="min-w-0 truncate">
-        macOS is blocking iPod access — PodSync can&apos;t read the device until
+        macOS is blocking iPod access — Platter can&apos;t read the device until
         removable-volume permission is granted.
       </span>
       <div className="flex-1" />

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Restructure the PodSync toolbar into three fixed zones, turn the connected-device label into a drive picker, move library-only controls into the row above the track list, and unpin the artist header.
+**Goal:** Restructure the Platter toolbar into three fixed zones, turn the connected-device label into a drive picker, move library-only controls into the row above the track list, and unpin the artist header.
 
 **Architecture:** Frontend only. The toolbar becomes a 3-column CSS grid so the centered tabs stop drifting when the left zone's width changes. A new `DriveSelect` dropdown replaces the static device label and absorbs Connect and Eject. A new `LibraryHeaderRow` absorbs Add and View and gains a selection state. Pure list/label logic is extracted to `src/lib/volumes.ts` and unit-tested; the components themselves are verified by running the app, matching this repo's existing posture (Vitest covers `src/lib` only — there is no component test harness and this plan does not add one).
 
@@ -115,7 +115,7 @@ describe("partitionVolumes", () => {
 
   it("keeps unsupported devices in the iPods section", () => {
     // A Shuffle is still an iPod. It is shown and disabled, not hidden —
-    // hiding it turns "this device is not supported" into "PodSync did not
+    // hiding it turns "this device is not supported" into "Platter did not
     // see my iPod", which is a worse bug report.
     const { ipods } = partitionVolumes([
       volume({ path: "/Volumes/PODSHUFFLE", isIpod: true, unsupported: true }),
@@ -267,11 +267,11 @@ export function DriveSelect({
       key={volume.path}
       // Positively identified as a device with no iTunesDB. Shown and
       // disabled, not hidden — clicking through to a libgpod failure is not an
-      // answer, and hiding it reads as "PodSync didn't see my iPod".
+      // answer, and hiding it reads as "Platter didn't see my iPod".
       disabled={volume.unsupported || busy}
       title={
         volume.unsupported
-          ? `${volume.model ?? "This device"} doesn't use an iTunesDB, so PodSync can't manage it`
+          ? `${volume.model ?? "This device"} doesn't use an iTunesDB, so Platter can't manage it`
           : volume.path
       }
       onClick={() => void onConnect(volume.path)}
@@ -779,11 +779,11 @@ the list is explicit:
 - [ ] **Step 4: Quit the app**
 
 ```bash
-pkill -x podsync-tauri
+pkill -x platter-tauri
 ```
 
-(`osascript`-style quits do not work here: the bundle is named PodSync, the
-process is `podsync-tauri`.)
+(`osascript`-style quits do not work here: the bundle is named Platter, the
+process is `platter-tauri`.)
 
 ---
 

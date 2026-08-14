@@ -57,7 +57,7 @@ deltas. Some emit index-keyed fragments, some send whole calls, some emit
 malformed JSON mid-stream. Budget one accumulator that tolerates all three, and
 treat "supports parallel tool calls" as a per-preset flag.
 
-Keychain via the `keyring` crate, service `com.podsync.tauri`. Commands:
+Keychain via the `keyring` crate, service `com.platter.tauri`. Commands:
 `llm_set_key`, `llm_has_key -> bool`, `llm_clear_key`, `llm_test`. There is
 deliberately no `llm_get_key` — the key cannot cross the IPC boundary.
 
@@ -198,7 +198,7 @@ around it is not.
 | `convert.rs` ×6 | `Command::new(ffmpeg)`, `ffprobe`, `/usr/bin/which` | Blocked, and execs a Homebrew binary outside the bundle |
 | `commands.rs:79` | `read_dir("/Volumes")` + `join("iPod_Control").exists()` | Auto-detect dies; statting inside an unselected volume is denied |
 | `bundle-dylibs.sh` | libgpod bundled | **LGPL-2.1** — the unresolved relink-vs-App-Store conflict |
-| `tauri.conf.json` | `com.local.podsync.tauri`, `codesign --sign -` | Placeholder bundle ID, ad-hoc signature |
+| `tauri.conf.json` | `com.local.platter.tauri`, `codesign --sign -` | Placeholder bundle ID, ad-hoc signature |
 
 Writing to the iPod is the one that's solvable —
 `com.apple.security.files.user-selected.read-write` plus app-scoped bookmarks,

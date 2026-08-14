@@ -6,7 +6,7 @@
 //!
 //! Outputs land in $TMPDIR/convert-check (swept on every run).
 
-use podsync_tauri_lib::convert;
+use platter_tauri_lib::convert;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

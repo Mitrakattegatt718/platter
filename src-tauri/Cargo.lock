@@ -2193,6 +2193,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
+name = "platter-tauri"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "cc",
+ "encoding_rs",
+ "libc",
+ "lofty",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "pkg-config",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+]
+
+[[package]]
 name = "plist"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2229,23 +2249,6 @@ dependencies = [
  "fdeflate",
  "flate2",
  "miniz_oxide",
-]
-
-[[package]]
-name = "podsync-tauri"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "cc",
- "encoding_rs",
- "libc",
- "lofty",
- "pkg-config",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
 ]
 
 [[package]]

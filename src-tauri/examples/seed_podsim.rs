@@ -11,7 +11,7 @@
 //! without duplicating tracks; --covers re-points every track's album art at
 //! covers/<slug>.png in place (the artless fixture album keeps no art).
 
-use podsync_tauri_lib::gpod::{self, GpodDbRef, GpodImportSpec, GpodTrackInfo, GpodTrackRef};
+use platter_tauri_lib::gpod::{self, GpodDbRef, GpodImportSpec, GpodTrackInfo, GpodTrackRef};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 

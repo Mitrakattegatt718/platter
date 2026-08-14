@@ -223,7 +223,7 @@ export async function renderShareCard(
 
   ctx.font = `500 10px ${FONT}`;
   ctx.fillStyle = p.muted;
-  ctx.fillText("Play counts recorded by the iPod · synced by PodSync", PAD, height - 18);
+  ctx.fillText("Play counts recorded by the iPod · synced by Platter", PAD, height - 18);
 
   return new Promise((resolve) => canvas.toBlob((b) => resolve(b), "image/png"));
 }

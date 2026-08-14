@@ -152,7 +152,7 @@ fn cache_artwork(data: &[u8], mime: &str) -> Option<String> {
         "image/png" => "png",
         _ => "jpg",
     };
-    let dir = std::env::temp_dir().join("PodSyncArtwork");
+    let dir = std::env::temp_dir().join("PlatterArtwork");
     std::fs::create_dir_all(&dir).ok()?;
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let stamp = std::time::SystemTime::now()

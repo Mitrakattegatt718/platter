@@ -215,7 +215,7 @@ export function BulkEditPanel({
               </AlertDialogTitle>
               <AlertDialogDescription>
                 The files are deleted from the device the next time you save.
-                This can't be undone from within PodSync.
+                This can't be undone from within Platter.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>

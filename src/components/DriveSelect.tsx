@@ -78,11 +78,11 @@ export function DriveSelect({
         key={volume.path}
         // Positively identified as a device with no iTunesDB. Shown and
         // disabled, not hidden — clicking through to a libgpod failure is not
-        // an answer, and hiding it reads as "PodSync didn't see my iPod".
+        // an answer, and hiding it reads as "Platter didn't see my iPod".
         disabled={volume.unsupported || busy}
         title={
           volume.unsupported
-            ? `${volume.model ?? "This device"} doesn't use an iTunesDB, so PodSync can't manage it`
+            ? `${volume.model ?? "This device"} doesn't use an iTunesDB, so Platter can't manage it`
             : volume.path
         }
         onClick={() => void onConnect(volume.path)}

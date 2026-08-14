@@ -227,7 +227,7 @@ fn find_tool(name: &str) -> Option<PathBuf> {
         return Some(bundled);
     }
     // Second chance: a developer building without staged binaries, or a user
-    // who would rather PodSync used their own ffmpeg.
+    // who would rather Platter used their own ffmpeg.
     for prefix in ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"] {
         let p = Path::new(prefix).join(name);
         if p.is_file() {
@@ -1642,7 +1642,7 @@ pub fn fresh_out_dir() -> PathBuf {
         .map(|d| d.as_millis())
         .unwrap_or(0);
     std::env::temp_dir().join(format!(
-        "PodSyncConvert-{stamp}-{}",
+        "PlatterConvert-{stamp}-{}",
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ))
 }
@@ -1698,7 +1698,7 @@ mod tests {
 
     #[test]
     fn cue_parses_tracks_and_encodings() {
-        let dir = std::env::temp_dir().join(format!("podsync-cue-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("platter-cue-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("album.flac"), b"x").unwrap();
         let cue = "REM GENRE \"Jazz\"\nREM DATE 1959\nPERFORMER \"Miles Davis\"\nTITLE \"Kind of Blue\"\nFILE \"album.flac\" WAVE\n  TRACK 01 AUDIO\n    TITLE \"So What\"\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    TITLE \"Freddie Freeloader\"\n    PERFORMER \"M. Davis\"\n    INDEX 01 09:22:15\n";
@@ -1751,7 +1751,7 @@ mod tests {
             eprintln!("skipping: ffmpeg not installed");
             return;
         };
-        let dir = std::env::temp_dir().join(format!("podsync-fmt-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("platter-fmt-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("src.flac");
@@ -1896,7 +1896,7 @@ mod tests {
             eprintln!("skipping: ffmpeg not installed");
             return;
         };
-        let dir = std::env::temp_dir().join(format!("podsync-e2e-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("platter-e2e-test-{}", std::process::id()));
         let album = dir.join("Album");
         std::fs::create_dir_all(&album).unwrap();
 
@@ -2079,7 +2079,7 @@ mod tests {
 
     #[test]
     fn scan_recurses_dedupes_and_splits() {
-        let dir = std::env::temp_dir().join(format!("podsync-scan-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("platter-scan-test-{}", std::process::id()));
         let sub = dir.join("Album");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(dir.join("loose.mp3"), b"x").unwrap();

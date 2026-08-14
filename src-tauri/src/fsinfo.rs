@@ -76,6 +76,6 @@ mod tests {
     fn missing_paths_report_nothing_rather_than_zero() {
         // Zero free bytes and "couldn't ask" must never be confused — one
         // blocks a conversion, the other means we don't know.
-        assert!(fs_info(Path::new("/nonexistent-podsync-probe")).is_none());
+        assert!(fs_info(Path::new("/nonexistent-platter-probe")).is_none());
     }
 }

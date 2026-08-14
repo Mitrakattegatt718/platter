@@ -47,7 +47,7 @@ describe("partitionVolumes", () => {
 
   it("keeps unsupported devices in the iPods section", () => {
     // A Shuffle is still an iPod. It is shown and disabled, not hidden —
-    // hiding it turns "this device is not supported" into "PodSync did not
+    // hiding it turns "this device is not supported" into "Platter did not
     // see my iPod", which is a worse bug report.
     const { ipods } = partitionVolumes([
       volume({ path: "/Volumes/PODSHUFFLE", isIpod: true, unsupported: true }),

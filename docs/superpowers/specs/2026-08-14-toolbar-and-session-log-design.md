@@ -261,7 +261,7 @@ One JSON object per line. The first line is a header, every subsequent line is
 an entry.
 
 ```jsonc
-{"kind":"header","app":"PodSync 0.1.0","os":"macOS 15.5","arch":"aarch64","startedAt":"2026-08-14T16:55:01.000Z","mountPoint":"/Volumes/PODSIM","device":{"model":"Classic (Black)","generation":"6"}}
+{"kind":"header","app":"Platter 0.1.0","os":"macOS 15.5","arch":"aarch64","startedAt":"2026-08-14T16:55:01.000Z","mountPoint":"/Volumes/PODSIM","device":{"model":"Classic (Black)","generation":"6"}}
 {"seq":41,"at":"2026-08-14T16:55:12.340Z","level":"info","src":"core","scope":"library","msg":"open_library ok","detail":"/Volumes/PODSIM · 4231 tracks · 812ms"}
 {"seq":42,"at":"2026-08-14T16:55:19.006Z","level":"warn","src":"core","scope":"import","msg":"skipped","detail":"/Users/me/Music/x.flac · unsupported sample rate"}
 ```
@@ -271,7 +271,7 @@ streams without a parser holding the whole file, and a truncated export still
 reads line by line up to the break. A truncated JSON array reads as nothing.
 
 Written through `tauri-plugin-dialog`, already wired in `lib.rs:18`. Default
-filename `podsync-session-YYYYMMDD-HHMMSS.jsonl`.
+filename `platter-session-YYYYMMDD-HHMMSS.jsonl`.
 
 The header's `mountPoint` and `device` come from the `VolumeInfo` of the
 currently open volume, which `fsinfo.rs` already reads out of

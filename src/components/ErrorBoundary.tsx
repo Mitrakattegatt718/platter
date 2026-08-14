@@ -14,7 +14,7 @@ export class ErrorBoundary extends React.Component<
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    console.error("PodSync render error:", error, info.componentStack);
+    console.error("Platter render error:", error, info.componentStack);
   }
 
   render() {
@@ -22,7 +22,7 @@ export class ErrorBoundary extends React.Component<
     if (!error) return this.props.children;
     return (
       <div className="flex h-screen flex-col gap-3 overflow-auto bg-background p-8 text-foreground">
-        <h1 className="text-lg font-semibold">PodSync hit an error</h1>
+        <h1 className="text-lg font-semibold">Platter hit an error</h1>
         <p className="text-sm text-muted-foreground">
           The interface stopped responding. Your iPod was not modified — every
           change is written as it is made.
