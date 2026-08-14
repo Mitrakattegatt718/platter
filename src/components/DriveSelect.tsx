@@ -72,6 +72,7 @@ export function DriveSelect({
 
   const row = (volume: VolumeInfo) => {
     const isConnected = volume.path === mountPoint;
+    const subtitle = volumeSubtitle(volume);
     return (
       <DropdownMenuItem
         key={volume.path}
@@ -94,9 +95,11 @@ export function DriveSelect({
               {volume.unsupported ? "Not supported" : volumeCapacity(volume)}
             </span>
           </div>
-          <span className="truncate text-xs text-muted-foreground/80">
-            {volumeSubtitle(volume)}
-          </span>
+          {/* Rendered only when it has something to add: an empty element
+              still claims the line height it would have filled. */}
+          {subtitle !== "" && (
+            <span className="truncate text-xs text-muted-foreground/80">{subtitle}</span>
+          )}
         </div>
         {isConnected && (
           <ConnectedMark busy={busy} onEject={onEject} />

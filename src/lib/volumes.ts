@@ -38,13 +38,38 @@ function known(value: string | null): string | null {
   return trimmed;
 }
 
-/** The second line of a drive row: what the device is, or — for an ordinary
- * volume, which has no such story — where it is mounted.
+/** libgpod's generation string leads with the same family word its model name
+ * already carries — model "Classic (Silver)" comes with generation "Classic",
+ * and printing both spells one fact as two. Leading words the model already
+ * contains are dropped; whatever is left is the part that says something new,
+ * so "Shuffle (2nd Gen.)" against "Shuffle (Silver)" keeps "2nd Gen." — the
+ * only thing separating a supported 2nd-gen Shuffle from a 4th. */
+function generationBeyond(generation: string, model: string): string | null {
+  const haystack = model.toLowerCase();
+  const words = generation.split(/\s+/);
+  let i = 0;
+  while (i < words.length && haystack.includes(words[i].toLowerCase())) i++;
+  let rest = words.slice(i).join(" ").trim();
+  // Removing the leading word can leave the remainder wrapped in the brackets
+  // that used to trail it.
+  const wrapped = /^\((.*)\)$/.exec(rest);
+  if (wrapped) rest = wrapped[1].trim();
+  return rest === "" ? null : rest;
+}
+
+/** The second line of a drive row: what the device is.
  *
  * The "iPod" prefix is added here because libgpod's model name drops it:
- * itdb_info_get_ipod_model_name_string yields "Classic (Black)". */
+ * itdb_info_get_ipod_model_name_string yields "Classic (Black)".
+ *
+ * An ordinary volume has no such story, so it gets its mount path — but only
+ * when that path says more than the row's own title already does. Under
+ * /Volumes it does not, and a second line repeating the first with a prefix
+ * costs menu height for nothing. */
 export function volumeSubtitle(volume: VolumeInfo): string {
-  if (!volume.isIpod) return volume.path;
+  if (!volume.isIpod) {
+    return volume.path === `/Volumes/${volumeLabel(volume.path)}` ? "" : volume.path;
+  }
 
   const model = known(volume.model);
   const generation = known(volume.generation);
@@ -60,7 +85,8 @@ export function volumeSubtitle(volume: VolumeInfo): string {
     // state to name rather than an error to hide.
     return "iPod · unidentified";
   }
-  return generation === null ? `iPod ${name}` : `iPod ${name} · ${generation}`;
+  const extra = generation === null ? null : generationBeyond(generation, name);
+  return extra === null ? `iPod ${name}` : `iPod ${name} · ${extra}`;
 }
 
 /** Free against total, for the right-hand column of a drive row. Empty — not

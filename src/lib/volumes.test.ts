@@ -72,6 +72,48 @@ describe("volumeSubtitle", () => {
     ).toBe("iPod Classic (Black) · Sixth Generation");
   });
 
+  it("drops a generation that only repeats the model name", () => {
+    // Real fixture data: libgpod reports model "Classic (Silver)" alongside
+    // generation "Classic", and printing both gives "Classic (Silver) ·
+    // Classic" — the same word twice, dressed up as two facts.
+    expect(
+      volumeSubtitle(
+        volume({
+          path: "/Volumes/PODCLASSIC",
+          isIpod: true,
+          model: "Classic (Silver)",
+          generation: "Classic",
+        }),
+      ),
+    ).toBe("iPod Classic (Silver)");
+    expect(
+      volumeSubtitle(
+        volume({
+          path: "/Volumes/PODTOUCH",
+          isIpod: true,
+          model: "Touch (Silver)",
+          generation: "Touch",
+        }),
+      ),
+    ).toBe("iPod Touch (Silver)");
+  });
+
+  it("keeps the part of the generation the model does not already say", () => {
+    // "Shuffle (2nd Gen.)" against model "Shuffle (Silver)": the repeated word
+    // goes, the generation number stays — it is the only thing distinguishing
+    // a 2nd-gen Shuffle (supported) from a 4th (not).
+    expect(
+      volumeSubtitle(
+        volume({
+          path: "/Volumes/PODSHUFFLE",
+          isIpod: true,
+          model: "Shuffle (Silver)",
+          generation: "Shuffle (2nd Gen.)",
+        }),
+      ),
+    ).toBe("iPod Shuffle (Silver) · 2nd Gen.");
+  });
+
   it("drops libgpod's Unknown placeholders rather than printing them", () => {
     // itdb_info_get_ipod_generation_string returns the literal "Unknown" for
     // an unidentified device. Showing it reads as a value the device reported.
@@ -104,8 +146,15 @@ describe("volumeSubtitle", () => {
     ).toBe("iPod · unidentified");
   });
 
-  it("shows the mount path for anything that is not an iPod", () => {
-    expect(volumeSubtitle(volume({ path: "/Volumes/MOCKUSB" }))).toBe("/Volumes/MOCKUSB");
+  it("says nothing about an ordinary volume mounted where they all are", () => {
+    // The row already shows "MOCKUSB"; a second line reading
+    // "/Volumes/MOCKUSB" is the same string with a prefix, and costs a line of
+    // menu height to say it.
+    expect(volumeSubtitle(volume({ path: "/Volumes/MOCKUSB" }))).toBe("");
+  });
+
+  it("shows the path of an ordinary volume mounted somewhere unusual", () => {
+    expect(volumeSubtitle(volume({ path: "/mnt/scratch" }))).toBe("/mnt/scratch");
   });
 });
 
