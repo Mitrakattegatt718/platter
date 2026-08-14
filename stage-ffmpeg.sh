@@ -52,7 +52,7 @@ if grep -qE -- '--enable-(gpl|nonfree)' <<<"$CONF"; then
   else
     echo >&2
     echo "error: this ffmpeg is built with --enable-gpl or --enable-nonfree." >&2
-    echo "       Bundling it would make PodSync a GPLv3 distributor." >&2
+    echo "       Bundling it would make Platter a GPLv3 distributor." >&2
     echo "       Build an LGPL ffmpeg (docs/ffmpeg-build.md), or re-run with" >&2
     echo "       ALLOW_GPL_FFMPEG=1 for local development only." >&2
     rm -f "$DEST/ffmpeg-$TRIPLE" "$DEST/ffprobe-$TRIPLE"

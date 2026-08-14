@@ -1,4 +1,4 @@
-# PodSync
+# Platter
 
 Tauri 2 + React app for managing music on a click-wheel iPod Classic
 (6th/7th gen), built on top of **libgpod**. Browse the iPod's library grouped
@@ -19,26 +19,41 @@ imports with tag reading, capacity gauge, eject.
 - libgpod at `~/.local` (override with `LIBGPOD_PREFIX`); GLib chain from
   Homebrew (override prefix with `BREW_PREFIX`)
 - `brew install dylibbundler` for self-contained bundles
+- ffmpeg/ffprobe staged as sidecars — `src-tauri/binaries/` is gitignored, so a
+  fresh clone must run `./stage-ffmpeg.sh` before its first build or
+  `tauri build` fails on `externalBin`
 
 ## Develop
 
 ```sh
 npm install
+./stage-ffmpeg.sh     # once per clone; see Distribute for the release caveat
 npm run tauri dev
 ```
 
 ## Distribute
 
 ```sh
-npm run tauri build   # .app + .dmg in src-tauri/target/release/bundle/
-./bundle-dylibs.sh    # copies libgpod + GLib into the .app, re-signs,
-                      # repacks a self-contained DMG
+npm run bundle        # tauri build, then bundle-dylibs.sh
 ```
 
-Without `bundle-dylibs.sh` the app only runs on machines that have libgpod at
-`~/.local` and GLib via Homebrew. The result is ad-hoc signed; for
-distribution beyond your own machines it still needs a Developer ID
-signature + notarization.
+`npm run tauri build` alone produces a DMG that **only runs on this machine** —
+it still links libgpod from `~/.local` and GLib from Homebrew. `bundle-dylibs.sh`
+is what copies those into `Contents/Frameworks`, rewrites the install names,
+re-signs, and repacks `Platter_self-contained.dmg`; it exits non-zero if any
+binary still references a build-machine path. Always build through
+`npm run bundle` so the un-patched DMG can never be mistaken for the artifact.
+
+Two things still stand between this and a public release:
+
+- **ffmpeg licensing.** `stage-ffmpeg.sh` will stage Homebrew's ffmpeg only with
+  `ALLOW_GPL_FFMPEG=1`, which is a development-only escape hatch — that build is
+  GPLv3 and cannot ship under this repo's LICENSE. Build the LGPL configuration
+  in `docs/ffmpeg-build.md` first.
+- **Signing.** The result is ad-hoc signed; distribution beyond your own machines
+  needs a Developer ID signature and notarization.
+
+See `LICENSE` and `THIRD-PARTY-NOTICES.md`.
 
 ## Fixture: simulated iPod (PODSIM)
 

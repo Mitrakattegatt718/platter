@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Everything that needs neither libgpod nor a Rust compile. This is the job
+  # that must stay fast and always green.
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # Builds the real production bundle, which is also what catches a broken
+      # dynamic import in the lazy-loaded tabs.
+      - run: npm run build
+
+  # cargo fmt parses without compiling, so it needs no system libraries at all.
+  #
+  # PREREQUISITE: the tree is not rustfmt-clean today (drift predates this
+  # workflow — build.rs, commands.rs, convert.rs and others). Land a standalone
+  # `cargo fmt --manifest-path src-tauri/Cargo.toml` commit before enabling this,
+  # or the first run is red for reasons unrelated to the change that triggered it.
+  # Kept non-blocking until then.
+  rust-fmt:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+  # Compiling the backend needs libgpod, which is NOT in Homebrew — it is built
+  # from source (the README expects it at ~/.local). Building it here takes a
+  # few minutes, so the result is cached on the libgpod version and the job only
+  # pays that cost when the cache misses.
+  #
+  # Left non-blocking until it has gone green once on a real runner: everything
+  # below the checkout is unverified, because this repo has no remote yet and CI
+  # has therefore never run.
+  rust:
+    runs-on: macos-14
+    continue-on-error: true
+    env:
+      LIBGPOD_VERSION: "0.8.3"
+      LIBGPOD_PREFIX: ${{ github.workspace }}/.libgpod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install build dependencies
+        run: brew install glib gdk-pixbuf libplist sqlite pkg-config autoconf automake libtool gettext intltool
+
+      - name: Cache libgpod
+        id: libgpod-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LIBGPOD_PREFIX }}
+          key: libgpod-${{ env.LIBGPOD_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Build libgpod from source
+        if: steps.libgpod-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://sourceforge.net/projects/gtkpod/files/libgpod/libgpod-${LIBGPOD_VERSION}/libgpod-${LIBGPOD_VERSION}.tar.bz2/download" -o libgpod.tar.bz2
+          tar xf libgpod.tar.bz2
+          cd "libgpod-${LIBGPOD_VERSION}"
+          ./configure --prefix="$LIBGPOD_PREFIX" \
+            --disable-udev --disable-gtk-doc --without-hal --disable-pygobject --disable-mono
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+      - name: Stage ffmpeg sidecars
+        # binaries/ is gitignored, and tauri.conf.json declares them as
+        # externalBin, so a build fails without this step.
+        run: ALLOW_GPL_FFMPEG=1 ./stage-ffmpeg.sh
+
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
