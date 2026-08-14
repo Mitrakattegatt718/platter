@@ -1,0 +1,110 @@
+# Builds the self-contained, LGPL-clean DMG on a tagged release. This is the
+# only build that may be distributed: it uses the LGPL ffmpeg configuration
+# (never Homebrew's GPL build) and every dependency is compiled for the
+# minimumSystemVersion tauri.conf.json declares — bundle-dylibs.sh fails the
+# build if any shipped Mach-O disagrees.
+#
+# NOTE: like ci.yml's rust job, unverified until it has run on a real runner.
+# The DMG it uploads is ad-hoc signed unless the SIGN_IDENTITY secret is set —
+# see bundle-dylibs.sh for the notarization steps a public release still needs.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  dmg:
+    runs-on: macos-14
+    env:
+      LIBGPOD_VERSION: "0.8.3"
+      FFMPEG_VERSION: "7.1.1"
+      LIBGPOD_PREFIX: ${{ github.workspace }}/.libgpod
+      FFMPEG_PREFIX: ${{ github.workspace }}/.ffmpeg-lgpl
+      # Every compiled artifact — libgpod, ffmpeg, the Rust binary — floors at
+      # the OS the bundle claims to support. Homebrew bottles on a macos-14
+      # runner already target 14.0.
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install build dependencies
+        run: |
+          brew install glib gdk-pixbuf libplist sqlite pkg-config \
+            autoconf automake libtool gettext intltool dylibbundler lame
+
+      - name: Cache libgpod
+        id: libgpod-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LIBGPOD_PREFIX }}
+          key: libgpod-${{ env.LIBGPOD_VERSION }}-${{ runner.os }}-${{ runner.arch }}-min14
+
+      - name: Build libgpod from source
+        if: steps.libgpod-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://sourceforge.net/projects/gtkpod/files/libgpod/libgpod-${LIBGPOD_VERSION}/libgpod-${LIBGPOD_VERSION}.tar.bz2/download" -o libgpod.tar.bz2
+          tar xf libgpod.tar.bz2
+          cd "libgpod-${LIBGPOD_VERSION}"
+          ./configure --prefix="$LIBGPOD_PREFIX" \
+            --disable-udev --disable-gtk-doc --without-hal --disable-pygobject --disable-mono
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+      - name: Cache LGPL ffmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FFMPEG_PREFIX }}
+          key: ffmpeg-lgpl-${{ env.FFMPEG_VERSION }}-${{ runner.os }}-${{ runner.arch }}-min14
+
+      - name: Build LGPL ffmpeg from source
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        # The configure line from docs/ffmpeg-build.md — LGPL only, no GPL
+        # components, exactly the codecs/muxers the convert pipeline uses.
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" -o ffmpeg.tar.xz
+          tar xf ffmpeg.tar.xz
+          cd "ffmpeg-${FFMPEG_VERSION}"
+          ./configure \
+            --prefix="$FFMPEG_PREFIX" \
+            --enable-shared --disable-static \
+            --disable-gpl --disable-nonfree \
+            --disable-doc --disable-ffplay \
+            --disable-network --disable-protocols --enable-protocol=file,pipe \
+            --disable-encoders --disable-decoders --disable-muxers --disable-demuxers \
+            --disable-filters --disable-bsfs --disable-parsers \
+            --enable-encoder=alac,aac,flac,pcm_s16le,pcm_s16be,mjpeg \
+            --enable-decoder=alac,aac,flac,mp3,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s32le,pcm_f32le,ape,tta,wavpack,shorten,dsd_lsbf,dsd_msbf,dsd_lsbf_planar,dsd_msbf_planar,mlp,truehd,wmalossless,mjpeg,png \
+            --enable-muxer=ipod,mp4,mp3,aiff,wav,flac,image2 \
+            --enable-demuxer=mov,mp3,flac,wav,aiff,ape,tta,wv,dsf,dff,caf,w64,image2,mjpeg \
+            --enable-parser=aac,flac,mpegaudio,png,mjpeg \
+            --enable-filter=aresample,aformat,anull,lowpass,scale,null \
+            --enable-libmp3lame \
+            --enable-audiotoolbox \
+            --enable-videotoolbox
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+      - name: Stage ffmpeg sidecars
+        run: ./stage-ffmpeg.sh "$FFMPEG_PREFIX/bin"
+
+      - name: Build and bundle
+        run: |
+          npm ci
+          npm run bundle
+
+      - name: Upload DMG to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/target/release/bundle/dmg/Platter_*.dmg

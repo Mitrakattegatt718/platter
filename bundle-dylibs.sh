@@ -48,19 +48,39 @@ for side in ffmpeg ffprobe; do
   fi
 done
 
+# Search paths honor the same env overrides the build does (build.rs reads
+# LIBGPOD_PREFIX/BREW_PREFIX), so CI — which builds libgpod into the
+# workspace — bundles from the prefix it actually linked against.
+SEARCH=(-s "${LIBGPOD_PREFIX:-$HOME/.local}/lib" -s "${BREW_PREFIX:-$(brew --prefix)}/lib")
+[ -n "${FFMPEG_PREFIX:-}" ] && SEARCH+=(-s "$FFMPEG_PREFIX/lib")
+
 dylibbundler -od -b \
   -x "$BIN" \
   "${FF_ARGS[@]}" \
   -d "$FRAMEWORKS" \
   -p '@executable_path/../Frameworks/' \
-  -s "$HOME/.local/lib" \
-  -s "$(brew --prefix)/lib" \
+  "${SEARCH[@]}" \
   > /dev/null
 
 echo "==> Re-signing"
 # After dylibbundler, never before: it ad-hoc re-signs each binary it rewrites,
 # and anything rewritten after the app is signed breaks the CodeResources seal.
-codesign --force --deep --sign - "$APP"
+#
+# SIGN_IDENTITY defaults to ad-hoc ("-"), which is fine for local use but
+# shows every downloader Gatekeeper's "damaged" dialog. A release sets it to a
+# Developer ID Application identity and notarizes the DMG afterwards:
+#   SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" npm run bundle
+#   xcrun notarytool submit <dmg> --keychain-profile <profile> --wait
+#   xcrun stapler staple <app>
+SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+if [ "$SIGN_IDENTITY" = "-" ]; then
+  # No hardened runtime on ad-hoc builds: library validation would refuse the
+  # team-less dylibs in Contents/Frameworks and the app would die in dyld.
+  codesign --force --deep --sign - "$APP"
+else
+  # Notarization requires the hardened runtime.
+  codesign --force --deep --options runtime --sign "$SIGN_IDENTITY" "$APP"
+fi
 
 echo "==> Verifying"
 # A corrupted signature still executes until the tampered page faults in, so
@@ -107,12 +127,54 @@ done < <(find "$APP/Contents/MacOS" "$FRAMEWORKS" -type f)
 
 [ "$fail" -eq 0 ] || exit 1
 
+echo "==> Checking deployment targets"
+# Every bundled Mach-O must run on the OS tauri.conf.json promises. Homebrew
+# bottles and a libgpod built without MACOSX_DEPLOYMENT_TARGET pin their minos
+# to the build machine's OS — the app then launches nowhere older, with dyld's
+# least helpful error. Rebuild the offending dependency with
+# MACOSX_DEPLOYMENT_TARGET set (docs/ffmpeg-build.md covers ffmpeg).
+MIN_OS="$(python3 -c 'import json;print(json.load(open("'"$ROOT"'/src-tauri/tauri.conf.json"))["bundle"]["macOS"]["minimumSystemVersion"])')"
+minos_fail=0
+while IFS= read -r macho; do
+  case "$(file -b "$macho")" in *Mach-O*) ;; *) continue ;; esac
+  minos="$(otool -l "$macho" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit} /LC_VERSION_MIN_MACOSX/{g=1} g&&/version/{print $2; exit}')"
+  [ -n "$minos" ] || continue
+  if [ "$(printf '%s\n%s\n' "$MIN_OS" "$minos" | sort -V | tail -1)" != "$MIN_OS" ]; then
+    echo "error: $(basename "$macho") requires macOS $minos, but the bundle claims $MIN_OS" >&2
+    minos_fail=1
+  fi
+done < <(find "$APP/Contents/MacOS" "$FRAMEWORKS" -type f)
+if [ "$minos_fail" -ne 0 ]; then
+  if [ "${ALLOW_MINOS_MISMATCH:-0}" = "1" ]; then
+    echo "warning: continuing despite deployment-target mismatches (ALLOW_MINOS_MISMATCH=1)" >&2
+  else
+    echo "       Rebuild those libraries with MACOSX_DEPLOYMENT_TARGET=$MIN_OS," >&2
+    echo "       or set ALLOW_MINOS_MISMATCH=1 for a local-only build." >&2
+    exit 1
+  fi
+fi
+
 echo "==> Repacking DMG"
-DMG="$BUNDLE/dmg/Platter_self-contained.dmg"
+# Versioned name so release assets are distinguishable, arch-tagged because
+# this build is Apple Silicon-only, staged beside an /Applications symlink so
+# the DMG has a drag-to-install affordance instead of inviting users to run
+# the app from a read-only image.
+VERSION="$(python3 -c 'import json;print(json.load(open("'"$ROOT"'/src-tauri/tauri.conf.json"))["version"])')"
+ARCH="$(uname -m)"
+DMG="$BUNDLE/dmg/Platter_${VERSION}_${ARCH}.dmg"
 mkdir -p "$BUNDLE/dmg"
 rm -f "$DMG"
-hdiutil create -volname Platter -srcfolder "$APP" -ov -format UDZO "$DMG" > /dev/null
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+cp -R "$APP" "$STAGE/"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -volname Platter -srcfolder "$STAGE" -ov -format UDZO "$DMG" > /dev/null
 
 echo "==> Done"
 echo "    app: $APP"
 echo "    dmg: $DMG"
+if [ "$SIGN_IDENTITY" = "-" ]; then
+  echo "    NOTE: ad-hoc signed. Downloaders will see Gatekeeper's 'damaged' dialog;"
+  echo "          they must run: xattr -dr com.apple.quarantine /Applications/Platter.app"
+  echo "          Ship releases with SIGN_IDENTITY set and notarize (see comments above)."
+fi

@@ -37,23 +37,40 @@ npm run tauri dev
 npm run bundle        # tauri build, then bundle-dylibs.sh
 ```
 
-`npm run tauri build` alone produces a DMG that **only runs on this machine** —
+`npm run tauri build` alone produces an app that **only runs on this machine** —
 it still links libgpod from `~/.local` and GLib from Homebrew. `bundle-dylibs.sh`
 is what copies those into `Contents/Frameworks`, rewrites the install names,
-re-signs, and repacks `Platter_self-contained.dmg`; it exits non-zero if any
-binary still references a build-machine path. Always build through
-`npm run bundle` so the un-patched DMG can never be mistaken for the artifact.
+re-signs, and packs a versioned `Platter_<version>_<arch>.dmg` with a
+drag-to-`/Applications` layout; it exits non-zero if any shipped binary still
+references a build-machine path, is missing a bundled dependency, or requires a
+newer macOS than `tauri.conf.json` promises. Always build through
+`npm run bundle` so an un-patched app can never be mistaken for the artifact.
 
-Two things still stand between this and a public release:
+Tagged releases (`v*`) build the distributable DMG in CI
+(`.github/workflows/release.yml`): libgpod and an **LGPL** ffmpeg are compiled
+from source with `MACOSX_DEPLOYMENT_TARGET` pinned, so the artifact is
+licensing-clean and runs on every macOS the bundle claims. **Apple Silicon
+only** for now — there is no Intel build.
+
+What still stands between a local build and a public release:
 
 - **ffmpeg licensing.** `stage-ffmpeg.sh` will stage Homebrew's ffmpeg only with
   `ALLOW_GPL_FFMPEG=1`, which is a development-only escape hatch — that build is
   GPLv3 and cannot ship under this repo's LICENSE. Build the LGPL configuration
-  in `docs/ffmpeg-build.md` first.
-- **Signing.** The result is ad-hoc signed; distribution beyond your own machines
-  needs a Developer ID signature and notarization.
+  in `docs/ffmpeg-build.md` first (the release workflow does exactly this).
+- **Deployment targets.** Dylibs built on this machine floor at this machine's
+  macOS. Rebuild dependencies with `MACOSX_DEPLOYMENT_TARGET=14.0`, or
+  `bundle-dylibs.sh` will refuse the bundle (`ALLOW_MINOS_MISMATCH=1` overrides
+  for local-only builds).
+- **Signing.** Default is ad-hoc: downloaders see Gatekeeper's "damaged" dialog
+  and must `xattr -dr com.apple.quarantine /Applications/Platter.app`. For real
+  distribution set `SIGN_IDENTITY="Developer ID Application: …"` for
+  `npm run bundle`, then notarize:
+  `xcrun notarytool submit <dmg> --keychain-profile <profile> --wait` and
+  `xcrun stapler staple Platter.app`.
 
-See `LICENSE` and `THIRD-PARTY-NOTICES.md`.
+Crash/debug logs land in `~/Library/Logs/com.kolebaev.platter/platter.log` —
+ask for that file in bug reports. See `LICENSE` and `THIRD-PARTY-NOTICES.md`.
 
 ## Fixture: simulated iPod (PODSIM)
 

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the bundle's Info.plist by Tauri at build time. The purpose
+     string is what macOS shows in the Removable Volumes permission prompt —
+     without it the system asks for access with no explanation, for an app
+     whose entire job is a removable volume. -->
+<plist version="1.0">
+<dict>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Platter needs access to removable volumes to read and update the music library on your iPod.</string>
+</dict>
+</plist>
