@@ -63,13 +63,18 @@ a hand-written C bridge. macOS only.
 ## Testing
 
 - `npm test` — Vitest over the pure modules in `ui/lib`. Fast, no browser.
-- `cargo test` — includes the ABI mirror test and the convert/cue parsing suite.
+- `cargo test` — the ABI mirror test, the convert/cue parsing suite, and
+  `tests/library_roundtrip.rs`, which drives the iTunesDB write path through the
+  real FFI against a temp-dir iPod skeleton. That last one is the gate for any
+  change to `library.rs` or the import loop: every assertion re-opens the
+  database from disk, because checking the in-memory copy would pass even if
+  `itdb_write` never wrote.
 - Fixture iPod: `hdiutil attach ~/VirtualPods/PodSim.dmg` mounts `/Volumes/PODSIM`.
   Re-seed with `cargo run --example seed_podsim` (`--enrich`, `--covers`).
   The volume must be `UDRW`, must pre-create `iPod_Control/{Music/F00..F19,iTunes,Artwork}`
   (libgpod 0.8.3 does not), and needs a real `ModelNumStr` in
   `iPod_Control/Device/SysInfo` or artwork is silently not written.
-- `commands.rs`, `library.rs` and `tags.rs` have **no tests**. That is the
+- `commands.rs` and `tags.rs` still have **no tests**. That is the
   riskiest gap in the repo — it is the iTunesDB write path.
 
 ## Environment facts worth not rediscovering

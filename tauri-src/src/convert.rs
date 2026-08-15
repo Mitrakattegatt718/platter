@@ -16,9 +16,10 @@
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// Formats the iPod plays natively — imported as-is, never probed.
 pub const DIRECT_EXTENSIONS: [&str; 2] = ["mp3", "aac"];
@@ -27,8 +28,8 @@ pub const DIRECT_EXTENSIONS: [&str; 2] = ["mp3", "aac"];
 /// anything lossy that slips through (e.g. AAC inside .m4a) is sorted out by
 /// the codec check after the probe.
 pub const PROBE_EXTENSIONS: [&str; 17] = [
-    "m4a", "alac", "flac", "wav", "wave", "aif", "aiff", "aifc", "ape", "wv", "tta", "dsf",
-    "dff", "shn", "caf", "w64", "rf64",
+    "m4a", "alac", "flac", "wav", "wave", "aif", "aiff", "aifc", "ape", "wv", "tta", "dsf", "dff",
+    "shn", "caf", "w64", "rf64",
 ];
 
 /// Codecs we accept as "lossless enough to be worth an ALAC copy".
@@ -173,13 +174,57 @@ impl TargetSpec {
     }
 }
 
-/// Which optional encoders the ffmpeg we resolved was actually built with.
-/// Probed once from `-buildconf`, mirroring `resampler_args`.
+/// How long a helper process gets before it is assumed wedged. These are all
+/// metadata-sized calls that finish in milliseconds; the limit exists so a
+/// malformed file or a stuck binary cannot park a worker for the life of the
+/// process. Long-running encodes are not covered here — `run_ffmpeg` registers
+/// its child with `ConvertControl` and is cancelled that way instead.
+const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `Command::output` with a deadline. std has no timed wait, so a watchdog
+/// thread SIGKILLs the child if it outstays the limit and the normal
+/// `wait_with_output` then returns as it would for any killed process. Reading
+/// through `wait_with_output` also keeps both pipes drained, which a
+/// poll-and-kill loop would not — a child that filled its stdout buffer would
+/// deadlock against us instead of timing out.
+fn output_with_timeout(cmd: &mut Command, limit: Duration) -> std::io::Result<Output> {
+    let child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let pid = child.id() as i32;
+    let finished = Arc::new(AtomicBool::new(false));
+    let watchdog = finished.clone();
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline {
+            if watchdog.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if !watchdog.load(Ordering::Relaxed) {
+            // Safe: the pid is our own child and has not been reaped yet —
+            // `finished` is only set after wait_with_output returns.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    });
+    let out = child.wait_with_output();
+    finished.store(true, Ordering::Relaxed);
+    out
+}
+
+/// What the ffmpeg we resolved was actually built with. One `-buildconf` pass
+/// answers every question we have about it; this used to be spawned twice,
+/// once for the encoders and again for the resampler, parsing the same output.
 pub struct Encoders {
     /// AudioToolbox AAC — better than the native encoder at every bitrate.
     pub aac_at: bool,
     /// ffmpeg ships no native MP3 encoder; without lame the option is dead.
     pub lame: bool,
+    /// Homebrew's ffmpeg is often built without libsoxr.
+    pub soxr: bool,
 }
 
 pub fn encoders() -> &'static Encoders {
@@ -187,16 +232,18 @@ pub fn encoders() -> &'static Encoders {
     CACHE.get_or_init(|| {
         let conf = tools()
             .and_then(|t| {
-                Command::new(&t.ffmpeg)
-                    .args(["-hide_banner", "-buildconf"])
-                    .output()
-                    .ok()
+                output_with_timeout(
+                    Command::new(&t.ffmpeg).args(["-hide_banner", "-buildconf"]),
+                    TOOL_TIMEOUT,
+                )
+                .ok()
             })
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_default();
         Encoders {
             aac_at: conf.contains("--enable-audiotoolbox"),
             lame: conf.contains("--enable-libmp3lame"),
+            soxr: conf.contains("--enable-libsoxr"),
         }
     })
 }
@@ -236,7 +283,7 @@ fn find_tool(name: &str) -> Option<PathBuf> {
     }
     // The app is launched from Finder with a minimal PATH, so `which` through
     // the user's shell profile is the last resort, not the first.
-    let out = Command::new("/usr/bin/which").arg(name).output().ok()?;
+    let out = output_with_timeout(Command::new("/usr/bin/which").arg(name), TOOL_TIMEOUT).ok()?;
     if out.status.success() {
         let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
         if p.is_file() {
@@ -267,22 +314,14 @@ pub fn tools() -> Option<&'static Tools> {
 pub const FFMPEG_MISSING: &str =
     "needs conversion to Apple Lossless, but ffmpeg isn't installed (brew install ffmpeg)";
 
-/// Homebrew's ffmpeg is often built without libsoxr. Detect once and fall
-/// back to swr tuned well past its defaults (filter_size 32 -> 512).
-fn resampler_args(ffmpeg: &Path) -> &'static str {
-    static ARGS: OnceLock<&'static str> = OnceLock::new();
-    ARGS.get_or_init(|| {
-        let has_soxr = Command::new(ffmpeg)
-            .args(["-hide_banner", "-buildconf"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains("--enable-libsoxr"))
-            .unwrap_or(false);
-        if has_soxr {
-            "resampler=soxr:precision=28"
-        } else {
-            "resampler=swr:filter_size=512:phase_shift=12:cutoff=0.95:exact_rational=1"
-        }
-    })
+/// Without libsoxr, fall back to swr tuned well past its defaults
+/// (filter_size 32 -> 512). Reads the shared `-buildconf` probe.
+fn resampler_args() -> &'static str {
+    if encoders().soxr {
+        "resampler=soxr:precision=28"
+    } else {
+        "resampler=swr:filter_size=512:phase_shift=12:cutoff=0.95:exact_rational=1"
+    }
 }
 
 // --------------------------------------------------------------- small helpers
@@ -413,8 +452,9 @@ impl MediaProbe {
 /// type wins. None when ffprobe finds no streams at all; audio callers must
 /// additionally check `codec` is non-empty.
 pub fn probe_media(ffprobe: &Path, src: &Path) -> Option<MediaProbe> {
-    let out = Command::new(ffprobe)
-        .args([
+    let out = output_with_timeout(
+        Command::new(ffprobe)
+            .args([
             "-v",
             "error",
             "-show_entries",
@@ -425,10 +465,11 @@ pub fn probe_media(ffprobe: &Path, src: &Path) -> Option<MediaProbe> {
             "-of",
             "json",
         ])
-        .arg("--")
-        .arg(src)
-        .output()
-        .ok()?;
+            .arg("--")
+            .arg(src),
+        TOOL_TIMEOUT,
+    )
+    .ok()?;
     let json: Value = serde_json::from_slice(&out.stdout).ok()?;
     let mut probe = MediaProbe::default();
     // ffprobe reports some numerics as strings ("44100") and some as numbers
@@ -573,7 +614,10 @@ fn parse_cue(path: &Path) -> Option<CueSheet> {
         } else if upper.starts_with("TRACK ") {
             let mut parts = s[6..].split_whitespace();
             let num: u32 = parts.next().and_then(|n| n.parse().ok()).unwrap_or(0);
-            if parts.next().is_some_and(|t| t.eq_ignore_ascii_case("AUDIO")) {
+            if parts
+                .next()
+                .is_some_and(|t| t.eq_ignore_ascii_case("AUDIO"))
+            {
                 tracks.push(RawTrack {
                     num,
                     title: String::new(),
@@ -771,7 +815,12 @@ impl Scanner {
             let Some(sheet) = parse_cue(p) else {
                 continue;
             };
-            let key = sheet.audio_file.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+            let key = sheet
+                .audio_file
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
             // second cue for the same image — first one wins
             if !excluded.insert(key) {
                 continue;
@@ -784,7 +833,12 @@ impl Scanner {
                 self.scan_dir(p);
             } else if p.is_file()
                 && is_audio_ext(p)
-                && !excluded.contains(&p.file_name().unwrap_or_default().to_string_lossy().to_lowercase())
+                && !excluded.contains(
+                    &p.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_lowercase(),
+                )
             {
                 self.push_audio(p);
             }
@@ -981,9 +1035,14 @@ enum ArtPlan {
     None,
     /// Art travels inside the source file (input 0, or a second un-seeked
     /// copy of the source when trimming).
-    Embedded { norm: bool },
+    Embedded {
+        norm: bool,
+    },
     /// Art comes from a separate image file fed as an extra input.
-    File { path: PathBuf, norm: bool },
+    File {
+        path: PathBuf,
+        norm: bool,
+    },
 }
 
 /// Codec selection and quality, as argv fragments.
@@ -1195,7 +1254,7 @@ fn convert_one(
         if probe.is_dsd() {
             filters.push(format!("lowpass=f={}", out_rate * 45 / 100));
         }
-        let mut ares = format!("aresample={}:osr={}", resampler_args(&tools.ffmpeg), out_rate);
+        let mut ares = format!("aresample={}:osr={}", resampler_args(), out_rate);
         if !float_target {
             ares.push_str(":osf=s16");
             // Dither only when losing resolution. Upconverting 8-bit needs
@@ -1603,7 +1662,8 @@ pub fn prepare_batch(
 
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
-    let results: Vec<Mutex<Option<Prepared>>> = (0..items.len()).map(|_| Mutex::new(None)).collect();
+    let results: Vec<Mutex<Option<Prepared>>> =
+        (0..items.len()).map(|_| Mutex::new(None)).collect();
 
     std::thread::scope(|s| {
         for _ in 0..workers {
@@ -1689,11 +1749,31 @@ mod tests {
             ..Default::default()
         };
         assert!(!base.needs_work());
-        assert!(MediaProbe { sample_rate: 96000, ..base.clone() }.needs_work());
-        assert!(MediaProbe { bits: 24, ..base.clone() }.needs_work());
-        assert!(MediaProbe { channels: 6, ..base.clone() }.needs_work());
-        assert!(MediaProbe { codec: "dsd_lsbf".into(), ..base.clone() }.needs_work());
-        assert!(MediaProbe { sample_fmt: "s32p".into(), ..base }.needs_work());
+        assert!(MediaProbe {
+            sample_rate: 96000,
+            ..base.clone()
+        }
+        .needs_work());
+        assert!(MediaProbe {
+            bits: 24,
+            ..base.clone()
+        }
+        .needs_work());
+        assert!(MediaProbe {
+            channels: 6,
+            ..base.clone()
+        }
+        .needs_work());
+        assert!(MediaProbe {
+            codec: "dsd_lsbf".into(),
+            ..base.clone()
+        }
+        .needs_work());
+        assert!(MediaProbe {
+            sample_fmt: "s32p".into(),
+            ..base
+        }
+        .needs_work());
     }
 
     #[test]
@@ -1757,9 +1837,16 @@ mod tests {
         let src = dir.join("src.flac");
         assert!(Command::new(&tools.ffmpeg)
             .args([
-                "-hide_banner", "-v", "error", "-y",
-                "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
-                "-c:a", "flac",
+                "-hide_banner",
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2",
+                "-c:a",
+                "flac",
             ])
             .arg(&src)
             .status()
@@ -1838,9 +1925,12 @@ mod tests {
             let probe = probe_media(&tools.ffprobe, &path)
                 .unwrap_or_else(|| panic!("{:?} output does not probe", target.format));
             assert_eq!(
-                probe.codec, want_codec,
+                probe.codec,
+                want_codec,
                 "{:?} wrote {} inside a .{} — a mislabelled file",
-                target.format, probe.codec, target.format.ext()
+                target.format,
+                probe.codec,
+                target.format.ext()
             );
             assert!(probe.duration_s > 1.0, "{:?} lost the audio", target.format);
         }
@@ -1914,24 +2004,48 @@ mod tests {
         // 24-bit / 96 kHz stereo FLAC — must downconvert to 16/48.
         gen(
             &[
-                "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
-                "-af", "aformat=sample_fmts=s32:channel_layouts=stereo",
-                "-ar", "96000", "-sample_fmt", "s32",
-                "-c:a", "flac", "-bits_per_raw_sample", "24",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2",
+                "-af",
+                "aformat=sample_fmts=s32:channel_layouts=stereo",
+                "-ar",
+                "96000",
+                "-sample_fmt",
+                "s32",
+                "-c:a",
+                "flac",
+                "-bits_per_raw_sample",
+                "24",
             ],
             &album.join("hires.flac"),
         );
         // Oversized PNG folder cover — must be normalized and embedded.
         gen(
-            &["-f", "lavfi", "-i", "color=c=red:size=1200x1200", "-frames:v", "1"],
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:size=1200x1200",
+                "-frames:v",
+                "1",
+            ],
             &album.join("cover.png"),
         );
         // 4-second 44.1/16 album image with a 2-track cue.
         gen(
             &[
-                "-f", "lavfi", "-i", "sine=frequency=330:duration=4",
-                "-af", "aformat=sample_fmts=s16:channel_layouts=stereo",
-                "-ar", "44100", "-c:a", "flac",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=330:duration=4",
+                "-af",
+                "aformat=sample_fmts=s16:channel_layouts=stereo",
+                "-ar",
+                "44100",
+                "-c:a",
+                "flac",
             ],
             &album.join("image.flac"),
         );
@@ -1997,14 +2111,30 @@ mod tests {
         let album2 = dir.join("Album2");
         std::fs::create_dir_all(&album2).unwrap();
         gen(
-            &["-f", "lavfi", "-i", "color=c=blue:size=1400x1400", "-frames:v", "1", "-q:v", "3"],
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:size=1400x1400",
+                "-frames:v",
+                "1",
+                "-q:v",
+                "3",
+            ],
             &album2.join("cover.jpg"),
         );
         gen(
             &[
-                "-f", "lavfi", "-i", "sine=frequency=220:duration=1",
-                "-af", "aformat=sample_fmts=s16:channel_layouts=stereo",
-                "-ar", "44100", "-c:a", "flac",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=220:duration=1",
+                "-af",
+                "aformat=sample_fmts=s16:channel_layouts=stereo",
+                "-ar",
+                "44100",
+                "-c:a",
+                "flac",
             ],
             &album2.join("song.flac"),
         );
@@ -2032,9 +2162,18 @@ mod tests {
         let inspec = album.join("already.m4a");
         gen(
             &[
-                "-f", "lavfi", "-i", "sine=frequency=550:duration=1",
-                "-af", "aformat=sample_fmts=s16:channel_layouts=stereo",
-                "-ar", "44100", "-c:a", "alac", "-sample_fmt", "s16p",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=550:duration=1",
+                "-af",
+                "aformat=sample_fmts=s16:channel_layouts=stereo",
+                "-ar",
+                "44100",
+                "-c:a",
+                "alac",
+                "-sample_fmt",
+                "s16p",
             ],
             &inspec,
         );
@@ -2056,8 +2195,12 @@ mod tests {
         let lossy = album.join("lossy.wv.wav");
         gen(
             &[
-                "-f", "lavfi", "-i", "sine=frequency=550:duration=1",
-                "-c:a", "adpcm_ima_wav",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=550:duration=1",
+                "-c:a",
+                "adpcm_ima_wav",
             ],
             &lossy,
         );

@@ -304,3 +304,61 @@ describe("filterGroups — the per-keystroke narrowing pass", () => {
     expect(groups[0].tracks).toHaveLength(0);
   });
 });
+
+// filterGroups keeps its previous answer so that extending a query narrows it
+// instead of rescanning. That is module-level state shared across calls, and
+// the tests above never trip it: they each build a fresh groups array, so the
+// identity guard declines the shortcut every time. These drive it deliberately
+// and check the fast path agrees with the slow one — a wrong answer here shows
+// up as tracks missing from search results, which is invisible until it isn't.
+describe("filterGroups narrowing", () => {
+  const tracks = [
+    track({ id: "1", title: "Yesterday", artist: "The Beatles", album: "Help" }),
+    track({ id: "2", title: "Yellow Submarine", artist: "The Beatles", album: "Revolver" }),
+    track({ id: "3", title: "Hello", artist: "Adele", album: "25" }),
+    track({ id: "4", title: "Bea Arthur", artist: "Nobody", album: "Misc" }),
+  ];
+  const ids = (gs: ReturnType<typeof groupTracks>) =>
+    gs.flatMap((g) => (g.albums ? g.albums.flatMap((a) => a.tracks) : g.tracks))
+      .map((t) => t.id)
+      .sort();
+
+  /** Same query against a copy — a different array identity, so no shortcut. */
+  const fullScan = (gs: ReturnType<typeof groupTracks>, q: string) =>
+    ids(filterGroups([...gs], q));
+
+  it("agrees with a full scan as the query is typed out", () => {
+    const groups = groupTracks(tracks, "artist", "title", "");
+    for (const q of ["b", "be", "bea", "beat", "beatl", "beatle", "beatles"]) {
+      const expected = fullScan(groups, q);
+      expect(ids(filterGroups(groups, q))).toEqual(expected);
+    }
+  });
+
+  it("is correct when the query shrinks again", () => {
+    const groups = groupTracks(tracks, "artist", "title", "");
+    filterGroups(groups, "beatles");
+    // "bea" matches more than "beatles" did, so the previous answer is not a
+    // valid base — backspacing must fall back to a full scan.
+    expect(ids(filterGroups(groups, "bea"))).toEqual(fullScan(groups, "bea"));
+  });
+
+  it("is correct when the query changes to something unrelated", () => {
+    const groups = groupTracks(tracks, "artist", "title", "");
+    filterGroups(groups, "beatles");
+    expect(ids(filterGroups(groups, "adele"))).toEqual(fullScan(groups, "adele"));
+  });
+
+  it("does not carry a previous answer across a new snapshot", () => {
+    const groups = groupTracks(tracks, "artist", "title", "");
+    filterGroups(groups, "bea");
+    const fewer = groupTracks(tracks.slice(2), "artist", "title", "");
+    expect(ids(filterGroups(fewer, "beatles"))).toEqual(fullScan(fewer, "beatles"));
+  });
+
+  it("still returns everything for an empty query", () => {
+    const groups = groupTracks(tracks, "artist", "title", "");
+    filterGroups(groups, "beatles");
+    expect(filterGroups(groups, "")).toBe(groups);
+  });
+});

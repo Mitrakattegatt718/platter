@@ -29,14 +29,8 @@ jobs:
 
   # cargo fmt parses without compiling, so it needs no system libraries at all.
   #
-  # PREREQUISITE: the tree is not rustfmt-clean today (drift predates this
-  # workflow — build.rs, commands.rs, convert.rs and others). Land a standalone
-  # `cargo fmt --manifest-path tauri-src/Cargo.toml` commit before enabling this,
-  # or the first run is red for reasons unrelated to the change that triggered it.
-  # Kept non-blocking until then.
   rust-fmt:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

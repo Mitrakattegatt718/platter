@@ -42,6 +42,11 @@ pub fn run() {
         .manage(library::new_shared())
         .manage(convert_job::new_queue())
         .setup(|app| {
+            // Covers staged by a previous run: a crash or a force-quit leaves
+            // them behind, and nothing else ever removes them. Safe here and
+            // only here — no import can be in flight before setup returns.
+            tags::sweep_artwork_cache();
+
             // Background saves report through a Tauri event: a failed
             // auto-flush is unsaved edits the user believes are on the
             // device, and the flush thread has no other voice.
@@ -117,7 +122,6 @@ pub fn run() {
             commands::open_library,
             commands::close_library,
             commands::eject_ipod,
-            commands::save_library,
             commands::open_privacy_settings,
             commands::list_app_icons,
             commands::get_app_icon,

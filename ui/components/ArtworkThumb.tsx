@@ -1,6 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { Music } from "lucide-react";
 import {
+  artworkFetchSize,
   cachedArtwork,
   getArtVersion,
   releaseArtwork,
@@ -31,7 +32,7 @@ export function ArtworkThumb({
   // Paint synchronously from the resolved cache when possible — with a
   // virtualized list rows remount constantly during scroll, and a one-frame
   // placeholder flash per remount reads as flicker.
-  const fetchSize = Math.max(80, size);
+  const fetchSize = artworkFetchSize(size);
   // Re-runs the effect when caches are invalidated (cover replaced) even
   // though trackId itself is unchanged.
   const artVersion = useSyncExternalStore(subscribeArt, getArtVersion);

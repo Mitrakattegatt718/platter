@@ -11,8 +11,7 @@ fn main() {
     let helpers_c = bridging.join("GpodHelpers.c");
 
     let home = env::var("HOME").unwrap_or_default();
-    let libgpod_prefix =
-        env::var("LIBGPOD_PREFIX").unwrap_or_else(|_| format!("{home}/.local"));
+    let libgpod_prefix = env::var("LIBGPOD_PREFIX").unwrap_or_else(|_| format!("{home}/.local"));
     let brew_prefix = env::var("BREW_PREFIX").unwrap_or_else(|_| "/opt/homebrew".into());
 
     let mut pkg_path = format!(

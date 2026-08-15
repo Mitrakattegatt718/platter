@@ -119,10 +119,6 @@ void gpod_close(GpodDBRef db);
 /// Number of tracks currently in the library.
 int gpod_track_count(GpodDBRef db);
 
-/// Fetch metadata for the track at `index` (0-based). Returns 1 on
-/// success. Caller must gpod_free_track_info(&info) when done.
-int gpod_track_at(GpodDBRef db, int index, GpodTrackInfo* outInfo);
-
 void gpod_free_track_info(GpodTrackInfo* info);
 
 /// Fetch metadata for one track the caller already knows is live — `ref`
@@ -133,9 +129,9 @@ void gpod_track_info_for(GpodTrackRef ref, GpodTrackInfo* outInfo);
 
 /// Fetch metadata for every track in one linear walk of the library.
 /// Returns a malloc'd array of `*outCount` infos (NULL when empty); caller
-/// must free it with gpod_tracks_collect_free(). Prefer this over calling
-/// gpod_track_at() in a loop — that walks the GList from its head on every
-/// call, which is quadratic in library size.
+/// must free it with gpod_tracks_collect_free(). Prefer this over any
+/// per-index accessor — walking the GList from its head on every call is
+/// quadratic in library size.
 GpodTrackInfo* _Nullable gpod_tracks_collect(GpodDBRef db, int* outCount);
 
 void gpod_tracks_collect_free(GpodTrackInfo* _Nullable array, int count);
@@ -164,18 +160,30 @@ int gpod_set_track_stats(GpodDBRef db, GpodTrackRef track, int bitrate, int play
 /// (png/jpg). Returns 1 on success.
 int gpod_set_track_artwork(GpodDBRef db, GpodTrackRef track, const char* imagePath);
 
+/// The same, for a whole selection, decoding the image once instead of once
+/// per track. Returns how many tracks it was applied to.
+int gpod_set_tracks_artwork(GpodDBRef db,
+                            const GpodTrackRef* _Nullable tracks,
+                            int count,
+                            const char* imagePath);
+
 /// Remove a track from the library entirely (also deletes the file
 /// off the device on next gpod_write).
 int gpod_remove_track(GpodDBRef db, GpodTrackRef track);
 
-/// Extract a track's cover-art thumbnail as PNG bytes in a malloc'd buffer
-/// (caller frees with free()), its length written to outLen. Returns NULL if
-/// the track has no artwork. Byte returns keep this off the filesystem — the
-/// old temp-file variant wrote every (track,size) to one deterministic path,
-/// which forced callers to hold the library lock through the read-back.
-unsigned char* _Nullable gpod_get_track_artwork_png_bytes(GpodTrackRef track,
-                                                          int size,
-                                                          int* outLen);
+/// Extract a track's cover-art thumbnail as encoded image bytes in a malloc'd
+/// buffer (caller frees with free()), its length written to outLen. Returns
+/// NULL if the track has no artwork. Byte returns keep this off the filesystem
+/// — the old temp-file variant wrote every (track,size) to one deterministic
+/// path, which forced callers to hold the library lock through the read-back.
+///
+/// `outIsPng` reports the encoding: JPEG for ordinary covers, PNG only when the
+/// thumbnail has an alpha channel JPEG could not carry. The caller needs it to
+/// label the bytes correctly.
+unsigned char* _Nullable gpod_get_track_artwork_bytes(GpodTrackRef track,
+                                                      int size,
+                                                      int* outLen,
+                                                      int* outIsPng);
 
 /// Identify the iPod mounted at `mountpoint` from iPod_Control/Device/SysInfo.
 /// Does NOT parse the iTunesDB, so it stays cheap enough to run over every

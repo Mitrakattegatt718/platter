@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { partitionVolumes, volumeCapacity, volumeLabel, volumeSubtitle } from "./volumes";
+import {
+  partitionVolumes,
+  sameVolumes,
+  volumeCapacity,
+  volumeLabel,
+  volumeSubtitle,
+} from "./volumes";
 import { volume } from "./testing";
 
 describe("volumeLabel", () => {
@@ -174,5 +180,47 @@ describe("volumeCapacity", () => {
     // Empty, not "0 B": zero free space and "couldn't ask" must never look
     // the same — one blocks an import, the other means we don't know.
     expect(volumeCapacity(volume({ path: "/p" }))).toBe("");
+  });
+});
+
+describe("sameVolumes", () => {
+  it("treats an unchanged scan as unchanged, whatever the array identity", () => {
+    const a = [volume({ path: "/Volumes/PODSIM", isIpod: true })];
+    const b = [volume({ path: "/Volumes/PODSIM", isIpod: true })];
+    expect(sameVolumes(a, b)).toBe(true);
+    expect(sameVolumes(a, a)).toBe(true);
+  });
+
+  it("notices a volume appearing, disappearing or being replaced", () => {
+    const podsim = [volume({ path: "/Volumes/PODSIM" })];
+    expect(sameVolumes(podsim, [])).toBe(false);
+    expect(sameVolumes(podsim, [volume({ path: "/Volumes/OTHER" })])).toBe(false);
+    expect(
+      sameVolumes(podsim, [...podsim, volume({ path: "/Volumes/OTHER" })]),
+    ).toBe(false);
+  });
+
+  it("notices free space changing — it is shown per row", () => {
+    expect(
+      sameVolumes(
+        [volume({ path: "/Volumes/PODSIM", freeBytes: 1000 })],
+        [volume({ path: "/Volumes/PODSIM", freeBytes: 900 })],
+      ),
+    ).toBe(false);
+  });
+
+  it("notices a device being identified on a later scan", () => {
+    expect(
+      sameVolumes(
+        [volume({ path: "/Volumes/PODSIM", model: null })],
+        [volume({ path: "/Volumes/PODSIM", model: "Classic (Black)" })],
+      ),
+    ).toBe(false);
+  });
+
+  it("handles the pre-first-scan null on either side", () => {
+    expect(sameVolumes(null, null)).toBe(true);
+    expect(sameVolumes(null, [])).toBe(false);
+    expect(sameVolumes([], null)).toBe(false);
   });
 });

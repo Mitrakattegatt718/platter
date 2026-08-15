@@ -26,8 +26,9 @@ unsafe fn take_err(ptr: *mut c_char) -> String {
 /// album (one rip = one encoder setting); play count is per track.
 fn fixture_stats(album: &str, title: &str) -> (i32, i32) {
     fn hash(s: &str) -> u32 {
-        s.bytes()
-            .fold(5381u32, |h, b| h.wrapping_mul(33).wrapping_add(u32::from(b)))
+        s.bytes().fold(5381u32, |h, b| {
+            h.wrapping_mul(33).wrapping_add(u32::from(b))
+        })
     }
     const TIERS: [i32; 5] = [128, 160, 192, 256, 320];
     (

@@ -5,7 +5,12 @@ import { ActivityHeatmap } from "@/components/ActivityHeatmap";
 import { ArtworkThumb } from "@/components/ArtworkThumb";
 import { Treemap } from "@/components/Treemap";
 import { readActivity } from "@/lib/activity";
-import { cachedArtwork, releaseArtwork, retainArtwork } from "@/lib/api";
+import {
+  artworkFetchSize,
+  cachedArtwork,
+  releaseArtwork,
+  retainArtwork,
+} from "@/lib/api";
 import {
   computeStats,
   coverTrackIds,
@@ -87,7 +92,7 @@ function StatsBody({
     const fetchCover = async (id: string): Promise<string | null> => {
       retainArtwork(id, 200);
       try {
-        return await cachedArtwork(id, 200);
+        return await cachedArtwork(id, artworkFetchSize(200));
       } finally {
         releaseArtwork(id, 200);
       }

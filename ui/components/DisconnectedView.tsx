@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight, HardDrive, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DeviceGlyph } from "@/components/DeviceGlyph";
 import { api } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
+import { sameVolumes } from "@/lib/volumes";
 import type { VolumeInfo } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -103,7 +104,11 @@ export function DisconnectedView({
     api
       .listVolumes()
       .then((next) => {
-        setVolumes(next);
+        // Keep the previous array when nothing actually changed. The quiet
+        // rescan below runs every 2.5s for as long as this view is up, and a
+        // fresh array each time re-rendered the whole list — and re-sorted it —
+        // to draw exactly what was already on screen.
+        setVolumes((prev) => (sameVolumes(prev, next) ? prev : next));
         setScanError(null);
       })
       // "Couldn't scan" and "no volumes" are different answers — showing the
@@ -133,7 +138,13 @@ export function DisconnectedView({
   }, [refresh]);
 
   // iPods first — they are the volumes the user is here for.
-  const ordered = volumes === null ? [] : [...volumes].sort((a, b) => Number(b.isIpod) - Number(a.isIpod));
+  const ordered = useMemo(
+    () =>
+      volumes === null
+        ? []
+        : [...volumes].sort((a, b) => Number(b.isIpod) - Number(a.isIpod)),
+    [volumes],
+  );
   const showSkeleton = volumes === null;
   const showEmpty = volumes !== null && ordered.length === 0;
 

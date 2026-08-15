@@ -16,6 +16,25 @@ export default defineConfig(async () => ({
     },
   },
 
+  build: {
+    // The only browser this ever runs in is the WKWebView on the macOS version
+    // tauri.conf.json already requires. Vite's default target downlevels for
+    // browsers that cannot reach this app, which costs bundle size and parse
+    // time at every launch to support nothing.
+    target: "safari17",
+    rollupOptions: {
+      output: {
+        // React and the Base UI primitives change only when dependencies are
+        // upgraded, while app code changes constantly. Splitting them apart
+        // keeps the large, stable half in its own file instead of rewriting a
+        // half-megabyte chunk on every build.
+        manualChunks: {
+          vendor: ["react", "react-dom", "@base-ui/react", "@tanstack/react-virtual"],
+        },
+      },
+    },
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

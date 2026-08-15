@@ -157,11 +157,14 @@ function TrackListImpl({
           {virtualizer.getVirtualItems().map((item) => {
             const row = rows[item.index];
             const groupId = rowGroupId(row);
+            // Deliberately no `ref={virtualizer.measureElement}`: every row
+            // height is a constant estimateSize already returns exactly, so
+            // measuring only installed a ResizeObserver per visible row and
+            // forced a layout read to re-learn a number we hardcoded.
             return (
               <div
                 key={item.key}
                 data-index={item.index}
-                ref={virtualizer.measureElement}
                 className="absolute top-0 left-0 w-full"
                 style={{ transform: `translateY(${item.start}px)` }}
                 onMouseEnter={() => setHoveredGroup(groupId)}

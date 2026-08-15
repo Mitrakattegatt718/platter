@@ -61,9 +61,7 @@ impl ProgressThrottle {
         {
             let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
             let now = std::time::Instant::now();
-            if !force
-                && last.is_some_and(|t| now.duration_since(t).as_millis() < 100)
-            {
+            if !force && last.is_some_and(|t| now.duration_since(t).as_millis() < 100) {
                 return;
             }
             *last = Some(now);
@@ -120,8 +118,8 @@ pub async fn list_volumes() -> Result<Vec<VolumeInfo>, String> {
         // Propagate the failure instead of answering with an empty list: on a
         // TCC denial the error string is what routes the UI to the granted-
         // permissions guidance, and "no volumes" would read as "no iPod".
-        let entries = std::fs::read_dir("/Volumes")
-            .map_err(|e| format!("Couldn't scan /Volumes: {e}"))?;
+        let entries =
+            std::fs::read_dir("/Volumes").map_err(|e| format!("Couldn't scan /Volumes: {e}"))?;
         let mut volumes: Vec<VolumeInfo> = entries
             .flatten()
             .filter(|e| e.file_name() != "Macintosh HD")
@@ -257,12 +255,6 @@ pub async fn eject_ipod(state: State<'_, SharedLibrary>) -> Result<LibrarySnapsh
     .await
 }
 
-#[tauri::command]
-pub async fn save_library(state: State<'_, SharedLibrary>) -> Result<(), String> {
-    let lib = state.inner().clone();
-    blocking(move || lib.lock().unwrap_or_else(|e| e.into_inner()).save()).await
-}
-
 /// Opens the System Settings pane where the user grants removable-volume
 /// access (macOS TCC — "Operation not permitted" when it's missing). The
 /// pane shows per-app toggles under Files & Folders; the app must be quit
@@ -309,7 +301,11 @@ pub async fn read_tags(app: AppHandle, paths: Vec<String>) -> Result<Vec<Pending
     blocking(move || Ok(read_tags_blocking(&app, paths, true))).await
 }
 
-fn read_tags_blocking(app: &AppHandle, paths: Vec<String>, with_preview: bool) -> Vec<PendingImport> {
+fn read_tags_blocking(
+    app: &AppHandle,
+    paths: Vec<String>,
+    with_preview: bool,
+) -> Vec<PendingImport> {
     let total = paths.len();
     let jobs: Vec<(usize, String)> = paths.into_iter().enumerate().collect();
     parallel_tag_read(app, &jobs, total, "Reading tags", with_preview)
@@ -408,7 +404,7 @@ pub async fn import_tracks(
     items: Vec<PendingImport>,
 ) -> Result<ImportResult, String> {
     let lib = state.inner().clone();
-    blocking(move || import_tracks_blocking(&app, &lib, items)).await
+    blocking(move || import_tracks_blocking(&app, &lib, items, false)).await
 }
 
 /// Pre-lock conversion pass: any staged item that isn't natively playable
@@ -493,14 +489,28 @@ fn prepare_sources(
     (sources, failures, Some(out_dir))
 }
 
+/// `already_prepared` means the caller has just run these files through
+/// `prepare_batch` itself, so every source is known to be in spec. Re-running
+/// the preparation pass on them is not free: an `.m4a` cannot be classified
+/// from its extension — it might be hi-res ALAC — so `prepare_one` probes it,
+/// and that is a whole ffprobe process per file to re-learn what the caller
+/// already established. The drag-and-drop and convert-to-iPod paths both land
+/// here having converted their own inputs; only the staging dialog arrives with
+/// files the app has never looked at.
 fn import_tracks_blocking(
     app: &AppHandle,
     lib: &SharedLibrary,
     items: Vec<PendingImport>,
+    already_prepared: bool,
 ) -> Result<ImportResult, String> {
     // Conversion runs before the library lock: encodes are long, and holding
     // the mutex through them would stall every artwork fetch in the UI.
-    let (sources, prepare_failures, scratch_dir) = prepare_sources(app, &items);
+    let (sources, prepare_failures, scratch_dir) = if already_prepared {
+        let sources = items.iter().map(|i| Some(i.file_path.clone())).collect();
+        (sources, Vec::new(), None)
+    } else {
+        prepare_sources(app, &items)
+    };
 
     // Fail fast when nothing is connected, before doing any per-file work.
     lib.lock().unwrap_or_else(|e| e.into_inner()).db()?;
@@ -620,14 +630,13 @@ fn import_tracks_blocking(
             let mut err: *mut std::os::raw::c_char = std::ptr::null_mut();
             let track_ref = unsafe { gpod_import_track(db, &spec, &mut err) };
             if track_ref.is_null() {
-                let msg =
-                    unsafe { take_c_string(err) }.unwrap_or_else(|| "unknown error".into());
+                let msg = unsafe { take_c_string(err) }.unwrap_or_else(|| "unknown error".into());
                 return Err(format!("Couldn't import track: {msg}"));
             }
             Ok(track_ref)
         })();
 
-        match result {
+        let staged_cover = match result {
             Ok(track_ref) => {
                 imported += 1;
                 if let Some(art) = &item.artwork_path {
@@ -635,15 +644,24 @@ fn import_tracks_blocking(
                         unsafe { gpod_set_track_artwork(db, track_ref, art_c.as_ptr()) };
                     }
                 }
+                // Only on success: a failed item stays staged in the dialog for
+                // retry, and its cover has to still be there when it comes back.
+                item.artwork_path.as_deref()
             }
             Err(msg) => {
                 failures.push(format!("{}: {msg}", item.title));
                 failed_indices.push(index);
+                None
             }
-        }
+        };
         // Releasing here is the point of the whole restructure: the next file's
         // copy waits behind anything the UI queued while this one ran.
         drop(lib);
+        // The cover is on the device now. Left alone, one full-size image per
+        // imported file would sit in the temp directory until the next reboot.
+        if let Some(art) = staged_cover {
+            tags::discard_staged_artwork(art);
+        }
     }
 
     let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
@@ -735,7 +753,7 @@ pub async fn import_files(
             Err(rejected.join("\n"))
         } else {
             let staged = read_tags_blocking(&app, ready, false);
-            import_tracks_blocking(&app, &lib, staged).map(|mut r| {
+            import_tracks_blocking(&app, &lib, staged, true).map(|mut r| {
                 r.failures.extend(rejected);
                 r
             })
@@ -901,10 +919,19 @@ pub async fn set_artwork(
         let mut lib = lib.lock().unwrap_or_else(|e| e.into_inner());
         let db = lib.db()?;
         let path_c = c_string(&image_path)?;
-        for id in &ids {
-            if let Some(track) = lib.resolve(id) {
-                unsafe { gpod_set_track_artwork(db, track, path_c.as_ptr()) };
-            }
+        // Resolved up front so the bridge can decode the image once and stamp
+        // the whole selection with it, rather than re-reading and re-decoding
+        // the same file for every track.
+        let tracks: Vec<_> = ids.iter().filter_map(|id| lib.resolve(id)).collect();
+        if !tracks.is_empty() {
+            unsafe {
+                gpod_set_tracks_artwork(
+                    db,
+                    tracks.as_ptr(),
+                    tracks.len() as std::os::raw::c_int,
+                    path_c.as_ptr(),
+                )
+            };
         }
         lib.art_cache_evict(&ids);
         lib.mark_dirty();
@@ -1011,7 +1038,11 @@ pub async fn convert_add(
         let tools = convert::tools().ok_or(convert::FFMPEG_MISSING)?;
         let scanned = convert::scan(&paths);
         // Read the mount before taking the queue lock; never hold both.
-        let mount = lib.lock().unwrap_or_else(|e| e.into_inner()).mount_point().map(str::to_string);
+        let mount = lib
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .mount_point()
+            .map(str::to_string);
         // Short lock to diff, NO lock for the probing (the slow part), then a
         // short lock to insert — see probe_items for why.
         let fresh = {
@@ -1066,7 +1097,11 @@ pub async fn convert_estimate(
     let queue = queue.inner().clone();
     let lib = lib.inner().clone();
     blocking(move || {
-        let mount = lib.lock().unwrap_or_else(|e| e.into_inner()).mount_point().map(str::to_string);
+        let mount = lib
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .mount_point()
+            .map(str::to_string);
         let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
         q.ipod_mount = mount;
         Ok(ConvertEstimateResult {
@@ -1094,7 +1129,11 @@ pub struct ConvertEstimateResult {
 #[tauri::command]
 pub fn cancel_convert(queue: State<'_, convert_job::SharedQueue>) -> Result<(), String> {
     // Clone the Arc out and drop the lock before killing anything.
-    let control = queue.lock().unwrap_or_else(|e| e.into_inner()).control.clone();
+    let control = queue
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .control
+        .clone();
     control.cancel();
     Ok(())
 }
@@ -1170,12 +1209,15 @@ impl JobEvents {
 
     fn push_line(&self, level: &'static str, file: Option<&str>, line: &str) {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        self.pending.lock().unwrap_or_else(|e| e.into_inner()).push(serde_json::json!({
-            "seq": seq,
-            "level": level,
-            "file": file,
-            "line": line,
-        }));
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(serde_json::json!({
+                "seq": seq,
+                "level": level,
+                "file": file,
+                "line": line,
+            }));
         self.maybe_flush(false);
     }
 
@@ -1188,11 +1230,14 @@ impl JobEvents {
     }
 
     fn push_status_id(&self, id: u64, status: &'static str, detail: Option<&str>) {
-        self.pending_items.lock().unwrap_or_else(|e| e.into_inner()).push(serde_json::json!({
-            "id": id,
-            "status": status,
-            "detail": detail,
-        }));
+        self.pending_items
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(serde_json::json!({
+                "id": id,
+                "status": status,
+                "detail": detail,
+            }));
         self.maybe_flush(false);
     }
 
@@ -1201,8 +1246,10 @@ impl JobEvents {
         if !force && last.elapsed() < std::time::Duration::from_millis(120) {
             return;
         }
-        let lines: Vec<_> = std::mem::take(&mut *self.pending.lock().unwrap_or_else(|e| e.into_inner()));
-        let updates: Vec<_> = std::mem::take(&mut *self.pending_items.lock().unwrap_or_else(|e| e.into_inner()));
+        let lines: Vec<_> =
+            std::mem::take(&mut *self.pending.lock().unwrap_or_else(|e| e.into_inner()));
+        let updates: Vec<_> =
+            std::mem::take(&mut *self.pending_items.lock().unwrap_or_else(|e| e.into_inner()));
         *last = std::time::Instant::now();
         drop(last);
         if !lines.is_empty() {
@@ -1370,7 +1417,7 @@ pub async fn convert_start(
             );
 
             let staged = read_tags_blocking(&app, ready, false);
-            let result = import_tracks_blocking(&app, &lib, staged);
+            let result = import_tracks_blocking(&app, &lib, staged, true);
             queue
                 .lock()
                 .unwrap()
@@ -1429,7 +1476,7 @@ pub async fn convert_start(
 }
 
 /// Extracts a track's cover thumbnail as a data URL. Extraction (pixbuf
-/// decode + PNG encode in the C bridge) runs under the lock — libgpod is not
+/// decode + image encode in the C bridge) runs under the lock — libgpod is not
 /// thread-safe — while the base64 encode runs outside it, and finished URLs
 /// are cached per (track, size). The bytes arrive through a memory buffer,
 /// never a temp file.
@@ -1444,7 +1491,7 @@ pub async fn get_artwork(
         let Ok(ptr) = id.parse::<usize>() else {
             return Ok(None);
         };
-        let (bytes, gen) = {
+        let (bytes, is_png, gen) = {
             let mut guard = lib.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(hit) = guard.art_cache_get(ptr, size) {
                 return Ok(Some(hit.to_string()));
@@ -1453,16 +1500,20 @@ pub async fn get_artwork(
                 return Ok(None);
             };
             let mut len: std::os::raw::c_int = 0;
-            let raw = unsafe { gpod_get_track_artwork_png_bytes(track, size, &mut len) };
+            let mut is_png: std::os::raw::c_int = 0;
+            let raw = unsafe { gpod_get_track_artwork_bytes(track, size, &mut len, &mut is_png) };
             if raw.is_null() || len <= 0 {
                 return Ok(None);
             }
             let bytes = unsafe { std::slice::from_raw_parts(raw, len as usize).to_vec() };
             unsafe { libc::free(raw as *mut std::os::raw::c_void) };
-            (bytes, guard.art_generation())
+            (bytes, is_png == 1, guard.art_generation())
         };
+        // The bridge encodes JPEG unless the thumbnail carries alpha, so the
+        // mime has to follow what it actually produced.
+        let mime = if is_png { "image/png" } else { "image/jpeg" };
         let url = format!(
-            "data:image/png;base64,{}",
+            "data:{mime};base64,{}",
             base64::engine::general_purpose::STANDARD.encode(bytes)
         );
         lib.lock()

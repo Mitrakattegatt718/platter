@@ -136,15 +136,6 @@ static void fill_info(Itdb_Track* tr, GpodTrackInfo* out) {
     out->has_drm = (tr->drm_userid != 0) ? 1 : 0;
 }
 
-int gpod_track_at(GpodDBRef dbRef, int index, GpodTrackInfo* outInfo) {
-    Itdb_iTunesDB* itdb = (Itdb_iTunesDB*)dbRef;
-    GList* node = g_list_nth(itdb->tracks, (guint)index);
-    if (!node) return 0;
-    Itdb_Track* tr = (Itdb_Track*)node->data;
-    fill_info(tr, outInfo);
-    return 1;
-}
-
 void gpod_track_info_for(GpodTrackRef ref, GpodTrackInfo* outInfo) {
     fill_info((Itdb_Track*)ref, outInfo);
 }
@@ -501,6 +492,39 @@ int gpod_set_track_stats(GpodDBRef dbRef, GpodTrackRef trackRef, int bitrate, in
     return 1;
 }
 
+int gpod_set_tracks_artwork(GpodDBRef dbRef,
+                            const GpodTrackRef* tracks,
+                            int count,
+                            const char* imagePath) {
+    (void)dbRef;
+    if (!tracks || count <= 0 || !imagePath) return 0;
+
+    // Decode once for the whole selection. itdb_track_set_thumbnails takes a
+    // path and re-reads and re-decodes the file for every track it is called
+    // on, so stamping one cover across a 20-track album used to mean twenty
+    // full JPEG decodes — with the library mutex held throughout.
+    GError* error = NULL;
+    GdkPixbuf* pixbuf = gdk_pixbuf_new_from_file(imagePath, &error);
+    if (!pixbuf) {
+        fprintf(stderr, "[platter] artwork decode failed: %s\n",
+                error ? error->message : "unknown");
+        if (error) g_error_free(error);
+        return 0;
+    }
+
+    int applied = 0;
+    for (int i = 0; i < count; i++) {
+        Itdb_Track* track = (Itdb_Track*)tracks[i];
+        if (!track) continue;
+        if (itdb_track_set_thumbnails_from_pixbuf(track, pixbuf)) {
+            track->has_artwork = PLATTER_HAS_ARTWORK_YES;
+            applied++;
+        }
+    }
+    g_object_unref(pixbuf);
+    return applied;
+}
+
 int gpod_set_track_artwork(GpodDBRef dbRef, GpodTrackRef trackRef, const char* imagePath) {
     (void)dbRef;
     Itdb_Track* track = (Itdb_Track*)trackRef;
@@ -528,19 +552,32 @@ int gpod_remove_track(GpodDBRef dbRef, GpodTrackRef trackRef) {
     return 1;
 }
 
-unsigned char* gpod_get_track_artwork_png_bytes(GpodTrackRef trackRef,
-                                                int size,
-                                                int* outLen) {
+unsigned char* gpod_get_track_artwork_bytes(GpodTrackRef trackRef,
+                                            int size,
+                                            int* outLen,
+                                            int* outIsPng) {
     Itdb_Track* track = (Itdb_Track*)trackRef;
-    if (!track || !outLen) return NULL;
+    if (!track || !outLen || !outIsPng) return NULL;
 
     GdkPixbuf* pixbuf = (GdkPixbuf*)itdb_track_get_thumbnail(track, size, size);
     if (!pixbuf) return NULL;
 
+    // Cover art is photographic, and PNG is the wrong codec for it: zlib on an
+    // 80px photo is both slower to encode and several times larger than JPEG,
+    // and every one of those bytes then pays another 33% for base64 on its way
+    // through the IPC boundary. PNG is kept only where it carries something
+    // JPEG cannot — an alpha channel.
+    gboolean has_alpha = gdk_pixbuf_get_has_alpha(pixbuf);
+    *outIsPng = has_alpha ? 1 : 0;
+
     gchar* encoded = NULL;
     gsize encodedLen = 0;
     GError* error = NULL;
-    if (!gdk_pixbuf_save_to_buffer(pixbuf, &encoded, &encodedLen, "png", &error, NULL)) {
+    gboolean ok = has_alpha
+        ? gdk_pixbuf_save_to_buffer(pixbuf, &encoded, &encodedLen, "png", &error, NULL)
+        : gdk_pixbuf_save_to_buffer(pixbuf, &encoded, &encodedLen, "jpeg", &error,
+                                    "quality", "82", NULL);
+    if (!ok) {
         fprintf(stderr, "[platter] artwork encode failed: %s\n",
                 error ? error->message : "unknown");
         if (error) g_error_free(error);

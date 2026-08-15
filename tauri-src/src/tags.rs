@@ -159,6 +159,30 @@ fn read_with(path: &str, with_preview: bool) -> PendingImport {
     item
 }
 
+/// Where embedded covers are staged on their way to the device. The file is
+/// not optional even when no preview is wanted: the import applies artwork from
+/// a path, so something has to exist on disk for libgpod to read.
+pub fn artwork_cache_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("PlatterArtwork")
+}
+
+/// Clears the staging directory. Called at launch, where no import can be in
+/// flight — these files used to accumulate for the life of /tmp, one full-size
+/// cover per tagged file ever imported.
+pub fn sweep_artwork_cache() {
+    let _ = std::fs::remove_dir_all(artwork_cache_dir());
+}
+
+/// Drops one staged cover once it has reached the device. Paths outside the
+/// staging directory are left alone — `artwork_path` can also name a file the
+/// user picked, and deleting that would be destroying their input.
+pub fn discard_staged_artwork(path: &str) {
+    let path = std::path::Path::new(path);
+    if path.starts_with(artwork_cache_dir()) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// Stages embedded artwork in the temp dir; unique per call so two files'
 /// covers can't collide.
 fn cache_artwork(data: &[u8], mime: &str) -> Option<String> {
@@ -167,7 +191,7 @@ fn cache_artwork(data: &[u8], mime: &str) -> Option<String> {
         "image/png" => "png",
         _ => "jpg",
     };
-    let dir = std::env::temp_dir().join("PlatterArtwork");
+    let dir = artwork_cache_dir();
     std::fs::create_dir_all(&dir).ok()?;
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let stamp = std::time::SystemTime::now()

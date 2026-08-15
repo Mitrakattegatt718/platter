@@ -101,3 +101,31 @@ export function volumeCapacity(volume: VolumeInfo): string {
   if (freeBytes !== null) return `${formatBytes(freeBytes)} free`;
   return "";
 }
+
+/** Whether two scans describe the same set of volumes in the same state.
+ *
+ * The disconnected view rescans every 2.5 seconds for as long as it is open.
+ * Without this the answer is a new array each time, so React re-renders and
+ * re-sorts the whole list to paint pixels identical to the ones already there.
+ * Capacity is part of the comparison on purpose — free space is displayed per
+ * row, so a drive filling up in the background should still refresh. */
+export function sameVolumes(
+  a: VolumeInfo[] | null,
+  b: VolumeInfo[] | null,
+): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || a.length !== b.length) return false;
+  return a.every((x, i) => {
+    const y = b[i];
+    return (
+      x.path === y.path &&
+      x.isIpod === y.isIpod &&
+      x.freeBytes === y.freeBytes &&
+      x.totalBytes === y.totalBytes &&
+      x.family === y.family &&
+      x.model === y.model &&
+      x.generation === y.generation &&
+      x.unsupported === y.unsupported
+    );
+  });
+}

@@ -93,6 +93,21 @@ export const api = {
  * round-trip. */
 const ART_CACHE_LIMIT = 1500;
 const ART_CONCURRENCY = 5;
+
+/** The only thumbnail sizes the backend is ever asked for.
+ *
+ * Every distinct size is a separate cache key on both sides and a separate
+ * pixbuf decode plus encode in the C bridge, so a caller passing its own pixel
+ * size — the treemap sizes tiles from the viewport — could ask for a hundred
+ * near-identical variants of one cover. Two rungs cover every use: 80 for the
+ * list, headers and wall tiles, 320 for the inspector and the share card,
+ * which is also retina-sharp at the 160 the mosaic displays. Anything larger
+ * than the top rung is served at the top rung and scaled down by CSS. */
+const ART_SIZES = [80, 320] as const;
+
+export function artworkFetchSize(displaySize: number): number {
+  return ART_SIZES.find((s) => s >= displaySize) ?? ART_SIZES[ART_SIZES.length - 1];
+}
 const artworkPromises = new Map<string, Promise<string | null>>();
 const artworkResolved = new Map<string, string | null>();
 /** Live subscriber count per key — retained by mounted thumbs. */

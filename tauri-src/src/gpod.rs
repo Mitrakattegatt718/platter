@@ -124,12 +124,23 @@ extern "C" {
         track: GpodTrackRef,
         image_path: *const c_char,
     ) -> c_int;
+    /// Applies one image to many tracks, decoding it once. Returns the number
+    /// of tracks it landed on.
+    pub fn gpod_set_tracks_artwork(
+        db: GpodDbRef,
+        tracks: *const GpodTrackRef,
+        count: c_int,
+        image_path: *const c_char,
+    ) -> c_int;
     pub fn gpod_remove_track(db: GpodDbRef, track: GpodTrackRef) -> c_int;
     /// Artwork as malloc'd PNG bytes; caller frees with libc::free.
-    pub fn gpod_get_track_artwork_png_bytes(
+    /// `out_is_png` is 1 when the bytes are PNG (the thumbnail had alpha) and
+    /// 0 when they are JPEG, which is the ordinary case.
+    pub fn gpod_get_track_artwork_bytes(
         track: GpodTrackRef,
         size: c_int,
         out_len: *mut c_int,
+        out_is_png: *mut c_int,
     ) -> *mut u8;
     /// Identify the device from SysInfo alone. All out-params optional;
     /// returned strings are malloc'd and freed with `take_c_string`.

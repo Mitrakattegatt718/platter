@@ -184,8 +184,7 @@ impl Queue {
         self.items
             .iter()
             .map(|s| {
-                let blocked =
-                    target.and_then(|t| convert::reject_pairing(&s.probe, t));
+                let blocked = target.and_then(|t| convert::reject_pairing(&s.probe, t));
                 s.row(blocked)
             })
             .collect()
@@ -220,10 +219,7 @@ impl Queue {
         scanned
             .into_iter()
             .filter(|item| {
-                queued.insert((
-                    item.src.clone(),
-                    item.cue.as_ref().map(|c| c.track_num),
-                ))
+                queued.insert((item.src.clone(), item.cue.as_ref().map(|c| c.track_num)))
             })
             .collect()
     }
@@ -232,21 +228,14 @@ impl Queue {
     /// may have changed while probing ran without the lock. The diff runs
     /// per-item here rather than via fresh_of so outcomes stay index-aligned
     /// with the work they describe.
-    pub fn insert_probed(
-        &mut self,
-        fresh: Vec<WorkItem>,
-        probed: Vec<Option<(MediaProbe, u64)>>,
-    ) {
+    pub fn insert_probed(&mut self, fresh: Vec<WorkItem>, probed: Vec<Option<(MediaProbe, u64)>>) {
         let mut queued: std::collections::HashSet<(PathBuf, Option<u32>)> = self
             .items
             .iter()
             .map(|s| (s.item.src.clone(), s.item.cue.as_ref().map(|c| c.track_num)))
             .collect();
         for (mut item, outcome) in fresh.into_iter().zip(probed) {
-            if !queued.insert((
-                item.src.clone(),
-                item.cue.as_ref().map(|c| c.track_num),
-            )) {
+            if !queued.insert((item.src.clone(), item.cue.as_ref().map(|c| c.track_num))) {
                 continue;
             }
             let Some((probe, source_bytes)) = outcome else {
@@ -313,7 +302,11 @@ pub struct Estimate {
     pub notes: Vec<String>,
 }
 
-pub fn estimate(queue: &Queue, target: &TargetSpec, dest: &Destination) -> Result<Estimate, String> {
+pub fn estimate(
+    queue: &Queue,
+    target: &TargetSpec,
+    dest: &Destination,
+) -> Result<Estimate, String> {
     target.validate()?;
 
     let mut likely = 0u64;
@@ -362,7 +355,9 @@ pub fn estimate(queue: &Queue, target: &TargetSpec, dest: &Destination) -> Resul
     if info.is_fat() {
         // Every file rounds up to a cluster, and 4 GiB is a hard per-file wall.
         high_billed += counted as u64 * FAT_CLUSTER;
-        notes.push("The iPod is FAT32-formatted: files round up to 32 KB and none may exceed 4 GB.".into());
+        notes.push(
+            "The iPod is FAT32-formatted: files round up to 32 KB and none may exceed 4 GB.".into(),
+        );
     }
 
     let headroom = match dest {
@@ -529,8 +524,8 @@ pub fn probe_items(items: &[WorkItem], ffprobe: &Path) -> Vec<Option<(MediaProbe
             s.spawn(|| loop {
                 let i = next.fetch_add(1, Ordering::Relaxed) as usize;
                 let Some(item) = items.get(i) else { break };
-                let probed = convert::probe_media(ffprobe, &item.src)
-                    .filter(|p| !p.codec.is_empty());
+                let probed =
+                    convert::probe_media(ffprobe, &item.src).filter(|p| !p.codec.is_empty());
                 if let Some(probe) = probed {
                     let bytes = std::fs::metadata(&item.src).map(|m| m.len()).unwrap_or(0);
                     *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some((probe, bytes));

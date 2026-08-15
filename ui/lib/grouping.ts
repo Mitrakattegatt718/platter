@@ -241,6 +241,28 @@ export function groupTracks(
 export function filterGroups(groups: TrackGroup[], search: string): TrackGroup[] {
   if (!search) return groups;
   const lowered = search.toLowerCase();
+  // Typing forward can only ever remove tracks: matching is a substring test,
+  // so everything matching "beatles" already matched "beatle". Filtering the
+  // previous answer instead of the whole library turns a 7-character query
+  // from 7 full scans into 7 progressively tinier ones. Guarded on the input
+  // being the very same grouped array — a new snapshot invalidates it.
+  const base =
+    lastInput === groups && lastQuery !== "" && lowered.startsWith(lastQuery)
+      ? lastResult
+      : groups;
+  const out = filterInto(base, lowered);
+  lastInput = groups;
+  lastQuery = lowered;
+  lastResult = out;
+  return out;
+}
+
+/** Previous filter answer, for the narrowing shortcut above. */
+let lastInput: TrackGroup[] | null = null;
+let lastQuery = "";
+let lastResult: TrackGroup[] = [];
+
+function filterInto(groups: TrackGroup[], lowered: string): TrackGroup[] {
   const out: TrackGroup[] = [];
 
   for (const group of groups) {

@@ -10,7 +10,7 @@
 //! Every assertion that matters re-opens the database from disk. Checking the
 //! in-memory copy would pass even if `itdb_write` never wrote anything.
 
-use platter_tauri_lib::gpod::{self, GpodDbRef, GpodTrackEdit, GpodImportSpec, GpodTrackRef};
+use platter_tauri_lib::gpod::{self, GpodDbRef, GpodImportSpec, GpodTrackEdit, GpodTrackRef};
 use platter_tauri_lib::library::{self, Library, Track};
 use std::ffi::CString;
 use std::os::raw::c_char;
@@ -36,7 +36,8 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Fixture {
-        let root = std::env::temp_dir().join(format!("platter-test-{}-{}", name, std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("platter-test-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let control = root.join("iPod_Control");
         for dir in ["iTunes", "Artwork", "Device"] {
@@ -195,7 +196,8 @@ fn open_creates_a_usable_library_on_a_bare_volume() {
     assert!(fixture.db_path().exists(), "save must write an iTunesDB");
 
     lib.close();
-    lib.open(fixture.mount()).expect("reopen what we just wrote");
+    lib.open(fixture.mount())
+        .expect("reopen what we just wrote");
     assert!(lib.snapshot().tracks.is_empty());
 }
 
@@ -207,8 +209,26 @@ fn imported_tracks_round_trip_through_save_and_reopen() {
 
     let a = fixture.audio("a.mp3");
     let b = fixture.audio("b.m4a");
-    import(&lib, &a, Meta { title: "Alpha", artist: "Zebra", album: "First", track_nr: 1 });
-    import(&lib, &b, Meta { title: "Bravo", artist: "Aardvark", album: "Second", track_nr: 2 });
+    import(
+        &lib,
+        &a,
+        Meta {
+            title: "Alpha",
+            artist: "Zebra",
+            album: "First",
+            track_nr: 1,
+        },
+    );
+    import(
+        &lib,
+        &b,
+        Meta {
+            title: "Bravo",
+            artist: "Aardvark",
+            album: "Second",
+            track_nr: 2,
+        },
+    );
 
     let tracks = save_and_reopen(&mut lib, &fixture);
     assert_eq!(tracks.len(), 2);
@@ -232,7 +252,9 @@ fn imported_tracks_round_trip_through_save_and_reopen() {
     assert!(find(&tracks, "Bravo").file_type.contains("AAC"));
 
     // The file really landed where the database says it did.
-    let on_disk = fixture.root.join(alpha.ipod_path.trim_start_matches(':').replace(':', "/"));
+    let on_disk = fixture
+        .root
+        .join(alpha.ipod_path.trim_start_matches(':').replace(':', "/"));
     assert!(on_disk.exists(), "missing copied file at {on_disk:?}");
 }
 
@@ -244,7 +266,16 @@ fn snapshot_orders_tracks_by_artist_case_insensitively() {
 
     for (name, artist) in [("One", "beta"), ("Two", "Alpha"), ("Three", "CHARLIE")] {
         let file = fixture.audio(&format!("{name}.mp3"));
-        import(&lib, &file, Meta { title: name, artist, album: "X", track_nr: 0 });
+        import(
+            &lib,
+            &file,
+            Meta {
+                title: name,
+                artist,
+                album: "X",
+                track_nr: 0,
+            },
+        );
     }
 
     let tracks = save_and_reopen(&mut lib, &fixture);
@@ -257,7 +288,16 @@ fn a_metadata_edit_survives_a_reopen() {
     let fixture = Fixture::new("edit");
     let mut lib = open(&fixture);
     let file = fixture.audio("a.mp3");
-    let track = import(&lib, &file, Meta { title: "Before", artist: "Old", album: "Album", track_nr: 3 });
+    let track = import(
+        &lib,
+        &file,
+        Meta {
+            title: "Before",
+            artist: "Old",
+            album: "Album",
+            track_nr: 3,
+        },
+    );
 
     let c_title = CString::new("After").unwrap();
     let c_artist = CString::new("New").unwrap();
@@ -282,7 +322,10 @@ fn a_metadata_edit_survives_a_reopen() {
     // The null/negative sentinels mean "leave alone" — the whole reason one
     // struct can serve both the inspector save and a single-field bulk edit.
     assert_eq!(t.album, "Album", "an unset edit field must not be cleared");
-    assert_eq!(t.track_number, 3, "a negative edit field must not zero the value");
+    assert_eq!(
+        t.track_number, 3,
+        "a negative edit field must not zero the value"
+    );
 }
 
 #[test]
@@ -291,7 +334,16 @@ fn flush_is_a_no_op_until_something_is_marked_dirty() {
     let fixture = Fixture::new("dirty");
     let mut lib = open(&fixture);
     let file = fixture.audio("a.mp3");
-    import(&lib, &file, Meta { title: "Ghost", artist: "A", album: "B", track_nr: 1 });
+    import(
+        &lib,
+        &file,
+        Meta {
+            title: "Ghost",
+            artist: "A",
+            album: "B",
+            track_nr: 1,
+        },
+    );
 
     // Never marked dirty, so this must not write — the import stays in memory.
     lib.flush_if_dirty().expect("flush");
@@ -312,10 +364,31 @@ fn a_removed_track_does_not_come_back() {
     let mut lib = open(&fixture);
     let a = fixture.audio("a.mp3");
     let b = fixture.audio("b.mp3");
-    let doomed = import(&lib, &a, Meta { title: "Doomed", artist: "A", album: "X", track_nr: 1 });
-    import(&lib, &b, Meta { title: "Keeper", artist: "A", album: "X", track_nr: 2 });
+    let doomed = import(
+        &lib,
+        &a,
+        Meta {
+            title: "Doomed",
+            artist: "A",
+            album: "X",
+            track_nr: 1,
+        },
+    );
+    import(
+        &lib,
+        &b,
+        Meta {
+            title: "Keeper",
+            artist: "A",
+            album: "X",
+            track_nr: 2,
+        },
+    );
 
-    assert_eq!(unsafe { gpod::gpod_remove_track(lib.db().unwrap(), doomed) }, 1);
+    assert_eq!(
+        unsafe { gpod::gpod_remove_track(lib.db().unwrap(), doomed) },
+        1
+    );
 
     let tracks = save_and_reopen(&mut lib, &fixture);
     assert_eq!(titles(&tracks), vec!["Keeper"]);
@@ -328,9 +401,27 @@ fn artwork_set_on_a_track_is_still_there_after_a_reopen() {
     let mut lib = open(&fixture);
     let file = fixture.audio("a.mp3");
     let cover = fixture.image();
-    let with_art = import(&lib, &file, Meta { title: "Pretty", artist: "A", album: "X", track_nr: 1 });
+    let with_art = import(
+        &lib,
+        &file,
+        Meta {
+            title: "Pretty",
+            artist: "A",
+            album: "X",
+            track_nr: 1,
+        },
+    );
     let plain = fixture.audio("b.mp3");
-    import(&lib, &plain, Meta { title: "Plain", artist: "A", album: "X", track_nr: 2 });
+    import(
+        &lib,
+        &plain,
+        Meta {
+            title: "Plain",
+            artist: "A",
+            album: "X",
+            track_nr: 2,
+        },
+    );
 
     let c_cover = CString::new(cover.to_str().unwrap()).unwrap();
     let ok = unsafe { gpod::gpod_set_track_artwork(lib.db().unwrap(), with_art, c_cover.as_ptr()) };
@@ -344,16 +435,87 @@ fn artwork_set_on_a_track_is_still_there_after_a_reopen() {
 }
 
 #[test]
+fn one_cover_can_be_stamped_across_a_whole_selection() {
+    let _guard = serialize();
+    let fixture = Fixture::new("bulkart");
+    let mut lib = open(&fixture);
+    let cover = fixture.image();
+
+    let mut refs = Vec::new();
+    for (n, title) in [(1, "One"), (2, "Two"), (3, "Three")] {
+        let file = fixture.audio(&format!("{n}.mp3"));
+        refs.push(import(
+            &lib,
+            &file,
+            Meta {
+                title,
+                artist: "A",
+                album: "X",
+                track_nr: n,
+            },
+        ));
+    }
+    // One track deliberately left out, so "applied to everything" would fail
+    // just as loudly as "applied to nothing".
+    let untouched = fixture.audio("4.mp3");
+    import(
+        &lib,
+        &untouched,
+        Meta {
+            title: "Four",
+            artist: "A",
+            album: "X",
+            track_nr: 4,
+        },
+    );
+
+    let c_cover = CString::new(cover.to_str().unwrap()).unwrap();
+    let applied = unsafe {
+        gpod::gpod_set_tracks_artwork(
+            lib.db().unwrap(),
+            refs.as_ptr(),
+            refs.len() as std::os::raw::c_int,
+            c_cover.as_ptr(),
+        )
+    };
+    assert_eq!(
+        applied, 3,
+        "every selected track should have taken the cover"
+    );
+
+    let tracks = save_and_reopen(&mut lib, &fixture);
+    for title in ["One", "Two", "Three"] {
+        assert!(find(&tracks, title).has_artwork, "{title} lost its cover");
+    }
+    assert!(
+        !find(&tracks, "Four").has_artwork,
+        "a track outside the selection must not be touched"
+    );
+}
+
+#[test]
 fn resolve_refuses_anything_that_is_not_a_live_track() {
     let _guard = serialize();
     let fixture = Fixture::new("resolve");
     let mut lib = open(&fixture);
     let file = fixture.audio("a.mp3");
-    import(&lib, &file, Meta { title: "Real", artist: "A", album: "X", track_nr: 1 });
+    import(
+        &lib,
+        &file,
+        Meta {
+            title: "Real",
+            artist: "A",
+            album: "X",
+            track_nr: 1,
+        },
+    );
 
     let tracks = lib.snapshot().tracks;
     let id = tracks[0].id.clone();
-    assert!(lib.resolve(&id).is_some(), "a freshly listed id must resolve");
+    assert!(
+        lib.resolve(&id).is_some(),
+        "a freshly listed id must resolve"
+    );
 
     assert!(lib.resolve("not-a-number").is_none());
     assert!(lib.resolve("0").is_none());
@@ -381,7 +543,16 @@ fn connecting_backs_up_the_database_and_play_counts_together() {
     let mut lib = open(&fixture);
     assert!(!db_bak.exists());
     let file = fixture.audio("a.mp3");
-    import(&lib, &file, Meta { title: "One", artist: "A", album: "X", track_nr: 1 });
+    import(
+        &lib,
+        &file,
+        Meta {
+            title: "One",
+            artist: "A",
+            album: "X",
+            track_nr: 1,
+        },
+    );
     lib.save().expect("first save");
     lib.close();
 
@@ -396,7 +567,10 @@ fn connecting_backs_up_the_database_and_play_counts_together() {
     // merged, so a database backup paired with a Play Counts from any other
     // moment would silently misattribute plays.
     assert!(db_bak.exists(), "connecting must back up the database");
-    assert!(plays_bak.exists(), "connecting must back up Play Counts too");
+    assert!(
+        plays_bak.exists(),
+        "connecting must back up Play Counts too"
+    );
     assert_eq!(std::fs::read(&db_bak).unwrap(), db_at_connect);
     assert_eq!(std::fs::read(&plays_bak).unwrap(), b"pretend play counts");
 
@@ -410,7 +584,16 @@ fn connecting_backs_up_the_database_and_play_counts_together() {
     // one already changed, tells them apart.
     for (n, name) in [(2, "Two"), (3, "Three")] {
         let extra = fixture.audio(&format!("{n}.mp3"));
-        import(&lib, &extra, Meta { title: name, artist: "A", album: "X", track_nr: n });
+        import(
+            &lib,
+            &extra,
+            Meta {
+                title: name,
+                artist: "A",
+                album: "X",
+                track_nr: n,
+            },
+        );
         lib.save().unwrap_or_else(|e| panic!("save {n}: {e}"));
     }
     assert_ne!(
@@ -437,7 +620,16 @@ fn the_auto_flush_thread_writes_once_the_edits_stop() {
         let mut lib = shared.lock().unwrap();
         lib.open(fixture.mount()).expect("open");
         let file = fixture.audio("a.mp3");
-        import(&lib, &file, Meta { title: "Later", artist: "A", album: "X", track_nr: 1 });
+        import(
+            &lib,
+            &file,
+            Meta {
+                title: "Later",
+                artist: "A",
+                album: "X",
+                track_nr: 1,
+            },
+        );
         assert!(!fixture.db_path().exists(), "nothing should be written yet");
         lib.mark_dirty();
     }
@@ -452,7 +644,10 @@ fn the_auto_flush_thread_writes_once_the_edits_stop() {
     );
 
     let mut lib = shared.lock().unwrap();
-    assert!(!lib.is_dirty(), "a completed flush must clear the dirty flag");
+    assert!(
+        !lib.is_dirty(),
+        "a completed flush must clear the dirty flag"
+    );
     lib.close();
 }
 
@@ -462,7 +657,16 @@ fn cached_artwork_is_dropped_when_the_generation_moves_on() {
     let fixture = Fixture::new("artgen");
     let mut lib = open(&fixture);
     let file = fixture.audio("a.mp3");
-    import(&lib, &file, Meta { title: "One", artist: "A", album: "X", track_nr: 1 });
+    import(
+        &lib,
+        &file,
+        Meta {
+            title: "One",
+            artist: "A",
+            album: "X",
+            track_nr: 1,
+        },
+    );
 
     let tracks = lib.snapshot().tracks;
     let ptr: usize = tracks[0].id.parse().unwrap();
@@ -475,8 +679,15 @@ fn cached_artwork_is_dropped_when_the_generation_moves_on() {
     // pointers are reused across imports, so a stale entry is the wrong cover
     // on the wrong track, not merely a miss.
     lib.art_cache_evict(&[ptr.to_string()]);
-    assert!(lib.art_cache_get(ptr, 80).is_none(), "evict must drop the entry");
-    assert_ne!(lib.art_generation(), generation, "evict must move the generation");
+    assert!(
+        lib.art_cache_get(ptr, 80).is_none(),
+        "evict must drop the entry"
+    );
+    assert_ne!(
+        lib.art_generation(),
+        generation,
+        "evict must move the generation"
+    );
 
     lib.art_cache_put(ptr, 80, generation, "data:image/png;base64,STALE".into());
     assert!(
