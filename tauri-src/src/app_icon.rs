@@ -12,8 +12,8 @@
 //! The swap is runtime-only and dies with the process, so `settings` stores the
 //! choice and `lib::run`'s setup hook re-applies it at every launch. It also
 //! means a quit app reverts to the bundle icon in the Dock's recents strip,
-//! which is why the bundle ships the dark artwork: that is the one on screen
-//! whether or not the process is alive.
+//! which is why the bundle ships the default (blue) artwork: that is the one on
+//! screen whether or not the process is alive.
 
 use objc2::{AllocAnyThread, MainThreadMarker};
 use objc2_app_kit::{NSApplication, NSImage};
@@ -30,19 +30,23 @@ use base64::Engine;
 ///
 /// Adding one is a file in `icons/alt/` plus a line here. Ids are persisted in
 /// settings, so renaming one silently resets anyone who had it selected.
-const ICONS: &[(&str, &str, &[u8])] =
-    &[("light", "Light", include_bytes!("../icons/alt/light.png"))];
+const ICONS: &[(&str, &str, &[u8])] = &[
+    ("gray", "Gray", include_bytes!("../icons/alt/gray.png")),
+    ("dark", "Dark", include_bytes!("../icons/alt/dark.png")),
+    ("mono", "Mono", include_bytes!("../icons/alt/mono.png")),
+];
 
-/// The bundle's own icon — the dark artwork, so Finder, Launchpad and
-/// Spotlight agree with what the picker calls "Dark". Kept out of `ICONS`
+/// The bundle's own icon — the blue artwork, so Finder, Launchpad and
+/// Spotlight agree with what the picker calls "Default". Kept out of `ICONS`
 /// because it is never applied as an image: AppKit restores it when handed
 /// nil. The picker still needs something to draw on that tile, and serving it
 /// from the same response is what lets the UI map straight over the list.
 const DEFAULT_ICON: &[u8] = include_bytes!("../icons/icon.png");
 
-/// Label for the `None` entry. Not "Default": the tile shows specific artwork
-/// and naming it after the art is what the user is actually choosing between.
-const DEFAULT_LABEL: &str = "Dark";
+/// Label for the `None` entry. The other three are named for their artwork;
+/// this one is the app's own identity rather than a colourway, and it is the
+/// tile Finder and the Dock fall back to, so it is named for that role.
+const DEFAULT_LABEL: &str = "Default";
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -145,15 +149,33 @@ mod tests {
     }
 
     #[test]
-    fn the_picker_offers_exactly_dark_and_light() {
-        // The set is deliberately two: the dark bundle icon and one light
-        // alternate. An icon added here shows up in the picker with no other
-        // code change, so this is the check that catches it.
+    fn the_picker_offers_the_four_shipped_icons() {
+        // The blue bundle icon plus three alternates. An icon added to ICONS
+        // shows up in the picker with no other code change, so this is the
+        // check that catches one arriving — or going missing because a source
+        // was renamed without regenerate-icons.sh being re-run.
         //
         // Order matters as much as membership — the bundle icon leads, and it
         // is the artwork the Dock falls back to once the process exits.
         let labels: Vec<String> = list().into_iter().map(|i| i.label).collect();
-        assert_eq!(labels, ["Dark", "Light"]);
+        assert_eq!(labels, ["Default", "Gray", "Dark", "Mono"]);
+    }
+
+    #[test]
+    fn the_alternates_are_all_different_images() {
+        // Every alternate is a separate include_bytes! of a file the icon
+        // script writes. Two ids resolving to identical bytes means a copy
+        // step aliased them, which the picker shows as two tiles that look the
+        // same and swap to the same Dock icon.
+        for (i, (id_a, _, a)) in ICONS.iter().enumerate() {
+            for (id_b, _, b) in &ICONS[i + 1..] {
+                assert_ne!(a, b, "{id_a} and {id_b} are the same image");
+            }
+            assert_ne!(
+                *a, DEFAULT_ICON,
+                "{id_a} is the same image as the bundle icon"
+            );
+        }
     }
 
     #[test]

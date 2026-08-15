@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Rebuild the whole app icon set from the two source renders in
+# Rebuild the whole app icon set from the four source renders in
 # tauri-src/icons/sources/.
 #
-# dark.png is the app's real icon: it becomes icon.icns and every sized PNG,
-# so Finder, Launchpad and Spotlight show it too — and so does the Dock once
-# the process is gone. light.png ships as the single alternate in icons/alt/ and
-# is only ever applied to the Dock of a running app — see
+# default.png is the app's real icon: it becomes icon.icns and every sized PNG,
+# so Finder, Launchpad and Spotlight show it too — and so does the Dock once the
+# process is gone. gray.png, dark.png and mono.png ship as alternates in
+# icons/alt/ and are only ever applied to the Dock of a running app — see
 # tauri-src/src/app_icon.rs for why macOS allows nothing more than that.
+#
+# Adding or removing a source here means editing the ICONS manifest in
+# app_icon.rs to match; its tests assert the exact set the picker offers.
 #
 # Needs python3 with Pillow. Run from anywhere.
 set -euo pipefail
@@ -16,15 +19,20 @@ SRC=tauri-src/icons/sources
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-# The renders are 360x363 — neither square nor anywhere near the 1024 an .icns
-# wants. Pad to a square canvas first: the generator stretches a non-square
-# input rather than letterboxing it, which visibly skews the click wheel.
-python3 - "$SRC" "$TMP" <<'PY'
+# The alternates, in the order the picker lists them. `default` is handled
+# separately: it is the bundle icon, not an alternate.
+ALTS=(gray dark mono)
+
+# Pad to a square canvas before resizing: the generator stretches a non-square
+# input rather than letterboxing it, which visibly skews the click wheel. The
+# current renders are already 1024x1024, so this is a no-op for them — it is
+# here so a future non-square export doesn't silently ship distorted.
+python3 - "$SRC" "$TMP" default "${ALTS[@]}" <<'PY'
 import sys
 from PIL import Image
 
-src, out = sys.argv[1], sys.argv[2]
-for name in ("light", "dark"):
+src, out, names = sys.argv[1], sys.argv[2], sys.argv[3:]
+for name in names:
     im = Image.open(f"{src}/{name}.png").convert("RGBA")
     w, h = im.size
     side = max(w, h)
@@ -37,19 +45,27 @@ for name in ("light", "dark"):
     print(f"{name}: {w}x{h} -> square {side} -> 1024 + 512")
 PY
 
-npm run tauri -- icon "$TMP/dark_1024.png"
+npm run tauri -- icon "$TMP/default_1024.png"
 
 # The generator emits iOS and Android sets unconditionally. This app is macOS
 # only, and 64x64.png is referenced by nothing in tauri.conf.json.
+#
+# Nothing here touches icons/icon.icon — the macOS 26 Icon Composer bundle,
+# Apple's format for Liquid Glass icons. `tauri icon` does not emit it; `tauri
+# build` does, from icon.png. Deleting it here would mean every build recreated
+# a directory this script had just removed.
 rm -rf tauri-src/icons/ios tauri-src/icons/android tauri-src/icons/64x64.png
 
 # The alternate set is exactly what is in tauri-src/icons/alt/, and app_icon.rs
 # pulls those in with include_bytes!. A file left over from an earlier layout
-# would not be compiled in, only confusing — drop it rather than leave it next to the
-# one that is live.
-rm -f tauri-src/icons/alt/dark.png
-cp "$TMP/light_512.png" tauri-src/icons/alt/light.png
+# would not be compiled in, only confusing — clear the directory rather than
+# leave strays next to the ones that are live.
+rm -f tauri-src/icons/alt/*.png
+for name in "${ALTS[@]}"; do
+  cp "$TMP/${name}_512.png" "tauri-src/icons/alt/${name}.png"
+done
 
 echo
-echo "done. bundle icon <- sources/dark.png, icons/alt/light.png <- sources/light.png"
+echo "done. bundle icon <- sources/default.png"
+echo "     alternates <- ${ALTS[*]} (icons/alt/)"
 echo "rebuild with: npm run bundle"
