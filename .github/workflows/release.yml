@@ -97,7 +97,7 @@ jobs:
           make install
 
       - name: Stage ffmpeg sidecars
-        run: ./stage-ffmpeg.sh "$FFMPEG_PREFIX/bin"
+        run: ./scripts/stage-ffmpeg.sh "$FFMPEG_PREFIX/bin"
 
       - name: Build and bundle
         run: |

@@ -91,7 +91,7 @@ jobs:
       - name: Stage ffmpeg sidecars
         # binaries/ is gitignored, and tauri.conf.json declares them as
         # externalBin, so a build fails without this step.
-        run: ALLOW_GPL_FFMPEG=1 ./stage-ffmpeg.sh
+        run: ALLOW_GPL_FFMPEG=1 ./scripts/stage-ffmpeg.sh
 
       - name: Clippy
         run: cargo clippy --manifest-path tauri-src/Cargo.toml --all-targets -- -D warnings

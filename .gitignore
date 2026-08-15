@@ -50,4 +50,4 @@ ffmpeg-lgpl/
 docs
 .claude
 # Mock-device tooling, local only
-mocks/
+scripts/make-mock-devices.sh

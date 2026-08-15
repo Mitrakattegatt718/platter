@@ -6,10 +6,10 @@
 # the un-patched app.
 #
 # Run after `npm run tauri build`:
-#   ./bundle-dylibs.sh
+#   ./scripts/bundle-dylibs.sh
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUNDLE="$ROOT/tauri-src/target/release/bundle"
 APP="${1:-$BUNDLE/macos/Platter.app}"
 BIN="$APP/Contents/MacOS/platter-tauri"
@@ -44,7 +44,7 @@ for side in ffmpeg ffprobe; do
   if [ -x "$APP/Contents/MacOS/$side" ]; then
     FF_ARGS+=(-x "$APP/Contents/MacOS/$side")
   else
-    echo "    note: $side sidecar not present — run ./stage-ffmpeg.sh to bundle it"
+    echo "    note: $side sidecar not present — run ./scripts/stage-ffmpeg.sh to bundle it"
   fi
 done
 

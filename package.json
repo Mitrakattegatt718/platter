@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "bundle": "tauri build && ./bundle-dylibs.sh",
+    "bundle": "tauri build && ./scripts/bundle-dylibs.sh",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

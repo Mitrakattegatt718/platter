@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# Rebuild the whole app icon set from the two source renders in this folder.
+# Rebuild the whole app icon set from the two source renders in
+# tauri-src/icons/sources/.
 #
 # dark.png is the app's real icon: it becomes icon.icns and every sized PNG,
 # so Finder, Launchpad and Spotlight show it too — and so does the Dock once
-# the process is gone. light.png ships as the single alternate in ../alt/ and
+# the process is gone. light.png ships as the single alternate in icons/alt/ and
 # is only ever applied to the Dock of a running app — see
 # tauri-src/src/app_icon.rs for why macOS allows nothing more than that.
 #
 # Needs python3 with Pillow. Run from anywhere.
 set -euo pipefail
 
-cd "$(dirname "$0")/../../.."
+cd "$(dirname "$0")/.."
 SRC=tauri-src/icons/sources
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -42,13 +43,13 @@ npm run tauri -- icon "$TMP/dark_1024.png"
 # only, and 64x64.png is referenced by nothing in tauri.conf.json.
 rm -rf tauri-src/icons/ios tauri-src/icons/android tauri-src/icons/64x64.png
 
-# The alternate set is exactly what is in ../alt/, and app_icon.rs pulls those
-# in with include_bytes!. A file left over from an earlier layout would not be
-# compiled in, only confusing — drop it rather than leave it lying next to the
+# The alternate set is exactly what is in tauri-src/icons/alt/, and app_icon.rs
+# pulls those in with include_bytes!. A file left over from an earlier layout
+# would not be compiled in, only confusing — drop it rather than leave it next to the
 # one that is live.
 rm -f tauri-src/icons/alt/dark.png
 cp "$TMP/light_512.png" tauri-src/icons/alt/light.png
 
 echo
-echo "done. bundle icon <- dark.png, ../alt/light.png <- light.png"
+echo "done. bundle icon <- sources/dark.png, icons/alt/light.png <- sources/light.png"
 echo "rebuild with: npm run bundle"

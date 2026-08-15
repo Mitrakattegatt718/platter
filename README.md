@@ -131,28 +131,28 @@ Once a DMG exists:
   build it from source; GLib chain from Homebrew (override with `BREW_PREFIX`)
 - `brew install dylibbundler` for self-contained bundles
 - ffmpeg/ffprobe staged as sidecars: `tauri-src/binaries/` is gitignored, so a
-  fresh clone must run `./stage-ffmpeg.sh` before its first build or
+  fresh clone must run `./scripts/stage-ffmpeg.sh` before its first build or
   `tauri build` fails on `externalBin`
 
 ### Develop
 
 ```sh
 npm install
-./stage-ffmpeg.sh     # once per clone; see the release caveat below
+./scripts/stage-ffmpeg.sh     # once per clone; see the release caveat below
 npm run tauri dev
 ```
 
 ### Tests
 
 ```sh
-npm test              # Vitest over src/lib
+npm test              # Vitest over ui/lib
 cargo test --manifest-path tauri-src/Cargo.toml   # includes the FFI ABI mirror test
 ```
 
 ### Distribute
 
 ```sh
-npm run bundle        # tauri build, then bundle-dylibs.sh
+npm run bundle        # tauri build, then scripts/bundle-dylibs.sh
 ```
 
 `npm run tauri build` alone produces an app that **only runs on this

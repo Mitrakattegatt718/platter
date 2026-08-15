@@ -5,11 +5,14 @@ a hand-written C bridge. macOS only.
 
 ## Build and run
 
-- The Rust/Tauri half lives in **`tauri-src/`**, not the conventional
-  `src-tauri/` — `src/` is React only. The Tauri CLI locates it by searching
-  for `tauri.conf.json`, not by that directory name, so `npm run tauri …` works
-  unchanged; anything spelling the path itself (`--manifest-path`, the shell
-  scripts, CI, the `build` symlink) has to say `tauri-src`.
+- Neither half sits where its tool expects. The Rust/Tauri side is
+  **`tauri-src/`**, not `src-tauri/`; the React side is **`ui/`**, not `src/`.
+  The Tauri CLI finds its half by searching for `tauri.conf.json` rather than
+  by directory name, and Vite finds the other through the `@/*` alias in
+  `tsconfig.json` + `vite.config.ts` — so `npm run tauri …` and `npm run dev`
+  work unchanged. Everything that spells a path does not: `--manifest-path`,
+  the scripts, CI, `index.html`'s entry, `components.json`, the `build`
+  symlink.
 - Cargo is **not** on `PATH` here. Export it first:
   `export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"`
 - **Always build releases with `npm run bundle`**, never bare `npm run tauri build`.
@@ -22,8 +25,10 @@ a hand-written C bridge. macOS only.
 - A bare `tauri build` after a bundle leaves a stale `_CodeSignature`, and the
   `.app` then fails to launch from Finder with LaunchServices error `-600`.
   Running `npm run bundle` fixes it, because bundling re-signs last.
-- `tauri-src/binaries/` is gitignored. A fresh clone must run `./stage-ffmpeg.sh`
-  before its first build or `externalBin` fails.
+- Every shell script lives in `scripts/` and derives the repo root from its own
+  location, so all of them run from anywhere.
+- `tauri-src/binaries/` is gitignored. A fresh clone must run
+  `./scripts/stage-ffmpeg.sh` before its first build or `externalBin` fails.
 - Quit the app with `pkill -x platter-tauri`. AppleScript
   `tell application "platter-tauri"` silently fails — the bundle is named
   Platter, the process is platter-tauri.
@@ -57,7 +62,7 @@ a hand-written C bridge. macOS only.
 
 ## Testing
 
-- `npm test` — Vitest over the pure modules in `src/lib`. Fast, no browser.
+- `npm test` — Vitest over the pure modules in `ui/lib`. Fast, no browser.
 - `cargo test` — includes the ABI mirror test and the convert/cue parsing suite.
 - Fixture iPod: `hdiutil attach ~/VirtualPods/PodSim.dmg` mounts `/Volumes/PODSIM`.
   Re-seed with `cargo run --example seed_podsim` (`--enrich`, `--covers`).
@@ -81,7 +86,7 @@ a hand-written C bridge. macOS only.
 - `otool -L` prints the file's own path as its first line. Filtering its output
   for build-machine paths without `tail -n +2` makes the check match itself.
 - Every icon in `tauri-src/icons/` is **generated**. The two sources live in
-  `icons/sources/`; `./icons/sources/regenerate.sh` rebuilds the whole set.
+  `icons/sources/`; `./scripts/regenerate-icons.sh` rebuilds the whole set.
   `npm run tauri -- icon` also emits `ios/` and `android/` unconditionally —
   the script deletes them, this app is macOS only. The icns encoder is not
   byte-reproducible, so `icon.icns` shows up modified after every run even when

@@ -2,7 +2,8 @@
 
 The two renders every other icon in the repo is derived from. Everything in
 `../` (`icon.icns`, `icon.png`, `32x32.png`, `Square*Logo.png`, `../alt/dark.png`)
-is generated — edit these two and re-run `./regenerate.sh`, never the outputs.
+is generated — edit these two and re-run `scripts/regenerate-icons.sh` from the
+repo root, never the outputs.
 
 | file        | role                                                          |
 | ----------- | ------------------------------------------------------------- |
@@ -18,7 +19,7 @@ would break the code signature. `../../src/app_icon.rs` has the full reasoning.
 ## Adding an icon
 
 1. Drop the render in here.
-2. Add a 512px copy to `../alt/` (`regenerate.sh` shows the squaring + resize).
+2. Add a 512px copy to `../alt/` (`regenerate-icons.sh` shows the squaring + resize).
 3. Add one line to `ICONS` in `../../src/app_icon.rs`.
 
 `app_icon::tests::the_picker_offers_exactly_light_and_dark` will fail until you
@@ -32,7 +33,7 @@ who had it selected.
 
 The icns encoder is not byte-reproducible: two runs over the same input produce
 files of identical size that decode to identical pixels (verified — 0 differing
-pixels of 1024×1024) but differ byte-for-byte. So `regenerate.sh` dirties
+pixels of 1024×1024) but differ byte-for-byte. So `regenerate-icons.sh` dirties
 `icon.icns` in git every time, with nothing visual behind it. Check out the old
 file rather than committing the churn unless the art actually changed.
 

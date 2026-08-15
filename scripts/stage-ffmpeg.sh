@@ -2,8 +2,8 @@
 # Stages ffmpeg + ffprobe into tauri-src/binaries/ as Tauri sidecars, so the
 # built .app carries them and the user needs no Homebrew install.
 #
-#   ./stage-ffmpeg.sh                 # take them from PATH / Homebrew
-#   ./stage-ffmpeg.sh /path/to/build  # take them from a directory you built
+#   ./scripts/stage-ffmpeg.sh                 # take them from PATH / Homebrew
+#   ./scripts/stage-ffmpeg.sh /path/to/build  # take them from a directory you built
 #
 # Tauri's externalBin wants the target triple appended to each filename;
 # tauri-build strips it again when it copies them into Contents/MacOS.
@@ -18,7 +18,7 @@
 # app uses and is a third of the size.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="$ROOT/tauri-src/binaries"
 TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 [ -n "$TRIPLE" ] || { echo "error: could not determine the rust host triple" >&2; exit 1; }
@@ -71,4 +71,4 @@ done
 grep -q -- '--enable-libmp3lame' <<<"$CONF" \
   || echo "warning: no libmp3lame — MP3 output will be unavailable" >&2
 
-echo "done. next: npm run tauri build && ./bundle-dylibs.sh"
+echo "done. next: npm run tauri build && ./scripts/bundle-dylibs.sh"
