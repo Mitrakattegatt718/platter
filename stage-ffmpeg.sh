@@ -14,7 +14,7 @@
 # distributor with the full corresponding-source obligation, and rules out the
 # Mac App Store. This script REFUSES a GPL build unless you set
 # ALLOW_GPL_FFMPEG=1, which is only defensible for local development.
-# See docs/ffmpeg-build.md for an LGPL configure line that loses nothing this
+# See .github/workflows/release.yml for an LGPL configure line that loses nothing this
 # app uses and is a third of the size.
 set -euo pipefail
 
@@ -48,12 +48,13 @@ CONF="$("$DEST/ffmpeg-$TRIPLE" -hide_banner -buildconf 2>/dev/null || true)"
 if grep -qE -- '--enable-(gpl|nonfree)' <<<"$CONF"; then
   if [ "${ALLOW_GPL_FFMPEG:-0}" = "1" ]; then
     echo "warning: staging a GPL/nonfree ffmpeg because ALLOW_GPL_FFMPEG=1." >&2
-    echo "         Do not ship a DMG built from this. See docs/ffmpeg-build.md." >&2
+    echo "         Do not ship a DMG built from this. See .github/workflows/release.yml" >&2
+    echo "         for the LGPL configure line." >&2
   else
     echo >&2
     echo "error: this ffmpeg is built with --enable-gpl or --enable-nonfree." >&2
     echo "       Bundling it would make Platter a GPLv3 distributor." >&2
-    echo "       Build an LGPL ffmpeg (docs/ffmpeg-build.md), or re-run with" >&2
+    echo "       Build an LGPL ffmpeg (configure line in release.yml), or re-run with" >&2
     echo "       ALLOW_GPL_FFMPEG=1 for local development only." >&2
     rm -f "$DEST/ffmpeg-$TRIPLE" "$DEST/ffprobe-$TRIPLE"
     exit 1

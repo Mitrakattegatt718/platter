@@ -69,7 +69,8 @@ a hand-written C bridge. macOS only.
 - ffmpeg/ffprobe **are** bundled as Tauri sidecars; `convert.rs` prefers the
   bundled pair over `PATH`. The ones staged on this machine are Homebrew's
   **GPLv3** build — fine locally, but they must not ship. See
-  `docs/ffmpeg-build.md` for the LGPL configure line.
+  `.claude/docs/ffmpeg-build.md` (local-only) or release.yml for the LGPL
+  configure line.
 - The shell is zsh, so `shopt` is unavailable and an unmatched glob is an error
   rather than a literal.
 - `otool -L` prints the file's own path as its first line. Filtering its output

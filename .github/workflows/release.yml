@@ -69,7 +69,7 @@ jobs:
 
       - name: Build LGPL ffmpeg from source
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
-        # The configure line from docs/ffmpeg-build.md — LGPL only, no GPL
+        # The canonical LGPL configure line — no GPL
         # components, exactly the codecs/muxers the convert pipeline uses.
         run: |
           set -euo pipefail

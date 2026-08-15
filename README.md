@@ -167,8 +167,9 @@ What stands between a local build and a public release:
 
 - **ffmpeg licensing.** `stage-ffmpeg.sh` stages Homebrew's ffmpeg only with
   `ALLOW_GPL_FFMPEG=1` — a development-only escape hatch; that build is GPLv3
-  and cannot ship under this repo's LICENSE. Build the LGPL configuration in
-  `docs/ffmpeg-build.md` first (the release workflow does exactly this)
+  and cannot ship under this repo's LICENSE. Build the LGPL configuration
+  first — `.github/workflows/release.yml` carries the full configure line and
+  builds it on every tagged release
 - **Deployment targets.** Dylibs built on this machine floor at this machine's
   macOS. Rebuild dependencies with `MACOSX_DEPLOYMENT_TARGET=14.0`, or
   `bundle-dylibs.sh` refuses the bundle (`ALLOW_MINOS_MISMATCH=1` overrides

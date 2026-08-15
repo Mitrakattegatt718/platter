@@ -132,7 +132,7 @@ echo "==> Checking deployment targets"
 # bottles and a libgpod built without MACOSX_DEPLOYMENT_TARGET pin their minos
 # to the build machine's OS — the app then launches nowhere older, with dyld's
 # least helpful error. Rebuild the offending dependency with
-# MACOSX_DEPLOYMENT_TARGET set (docs/ffmpeg-build.md covers ffmpeg).
+# MACOSX_DEPLOYMENT_TARGET set (release.yml shows the ffmpeg build).
 MIN_OS="$(python3 -c 'import json;print(json.load(open("'"$ROOT"'/src-tauri/tauri.conf.json"))["bundle"]["macOS"]["minimumSystemVersion"])')"
 minos_fail=0
 while IFS= read -r macho; do
