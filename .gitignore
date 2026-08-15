@@ -46,3 +46,8 @@ ffmpeg-lgpl/
 
 # TypeScript incremental build state
 *.tsbuildinfo
+
+docs
+.claude
+# Mock-device tooling, local only
+mocks/
