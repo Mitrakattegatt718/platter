@@ -32,3 +32,17 @@ build
 
 # Staged ffmpeg/ffprobe sidecars (see stage-ffmpeg.sh)
 src-tauri/binaries
+
+# An LGPL ffmpeg built inside the repo (docs/ffmpeg-build.md suggests a
+# sibling directory, but a checkout-local build must not get committed)
+ffmpeg-lgpl/
+
+# Session-local Claude Code permissions; .claude/CLAUDE.md stays tracked
+.claude/settings.local.json
+
+# Secrets and machine-local config (signing identities, notarization profiles)
+.env
+.env.*
+
+# TypeScript incremental build state
+*.tsbuildinfo
