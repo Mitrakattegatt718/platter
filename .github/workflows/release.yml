@@ -30,7 +30,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: tauri-src
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -107,4 +107,4 @@ jobs:
       - name: Upload DMG to the release
         uses: softprops/action-gh-release@v2
         with:
-          files: src-tauri/target/release/bundle/dmg/Platter_*.dmg
+          files: tauri-src/target/release/bundle/dmg/Platter_*.dmg

@@ -31,7 +31,7 @@ jobs:
   #
   # PREREQUISITE: the tree is not rustfmt-clean today (drift predates this
   # workflow — build.rs, commands.rs, convert.rs and others). Land a standalone
-  # `cargo fmt --manifest-path src-tauri/Cargo.toml` commit before enabling this,
+  # `cargo fmt --manifest-path tauri-src/Cargo.toml` commit before enabling this,
   # or the first run is red for reasons unrelated to the change that triggered it.
   # Kept non-blocking until then.
   rust-fmt:
@@ -42,7 +42,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - run: cargo fmt --manifest-path tauri-src/Cargo.toml --check
 
   # Compiling the backend needs libgpod, which is NOT in Homebrew — it is built
   # from source (the README expects it at ~/.local). Building it here takes a
@@ -65,7 +65,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: tauri-src
       - name: Install build dependencies
         run: brew install glib gdk-pixbuf libplist sqlite pkg-config autoconf automake libtool gettext intltool
 
@@ -94,7 +94,7 @@ jobs:
         run: ALLOW_GPL_FFMPEG=1 ./stage-ffmpeg.sh
 
       - name: Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --manifest-path tauri-src/Cargo.toml --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path tauri-src/Cargo.toml

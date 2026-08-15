@@ -1,6 +1,6 @@
 <div align="center">
 
-  <img src="src-tauri/icons/icon.png" width="128" alt="Platter app icon" />
+  <img src="tauri-src/icons/icon.png" width="128" alt="Platter app icon" />
 
   <h1>Platter</h1>
 
@@ -130,7 +130,7 @@ Once a DMG exists:
 - libgpod at `~/.local` (override with `LIBGPOD_PREFIX`) — not in Homebrew,
   build it from source; GLib chain from Homebrew (override with `BREW_PREFIX`)
 - `brew install dylibbundler` for self-contained bundles
-- ffmpeg/ffprobe staged as sidecars: `src-tauri/binaries/` is gitignored, so a
+- ffmpeg/ffprobe staged as sidecars: `tauri-src/binaries/` is gitignored, so a
   fresh clone must run `./stage-ffmpeg.sh` before its first build or
   `tauri build` fails on `externalBin`
 
@@ -146,7 +146,7 @@ npm run tauri dev
 
 ```sh
 npm test              # Vitest over src/lib
-cargo test --manifest-path src-tauri/Cargo.toml   # includes the FFI ABI mirror test
+cargo test --manifest-path tauri-src/Cargo.toml   # includes the FFI ABI mirror test
 ```
 
 ### Distribute

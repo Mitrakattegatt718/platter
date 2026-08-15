@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stages ffmpeg + ffprobe into src-tauri/binaries/ as Tauri sidecars, so the
+# Stages ffmpeg + ffprobe into tauri-src/binaries/ as Tauri sidecars, so the
 # built .app carries them and the user needs no Homebrew install.
 #
 #   ./stage-ffmpeg.sh                 # take them from PATH / Homebrew
@@ -19,7 +19,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEST="$ROOT/src-tauri/binaries"
+DEST="$ROOT/tauri-src/binaries"
 TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 [ -n "$TRIPLE" ] || { echo "error: could not determine the rust host triple" >&2; exit 1; }
 

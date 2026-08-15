@@ -13,8 +13,8 @@ dist-ssr
 *.local
 
 # Rust / Tauri build output
-src-tauri/target
-src-tauri/gen/schemas
+tauri-src/target
+tauri-src/gen/schemas
 
 # Editor directories and files
 .vscode/*
@@ -27,11 +27,11 @@ src-tauri/gen/schemas
 *.sln
 *.sw?
 
-# Symlink to src-tauri/target/release/bundle
+# Symlink to tauri-src/target/release/bundle
 build
 
 # Staged ffmpeg/ffprobe sidecars (see stage-ffmpeg.sh)
-src-tauri/binaries
+tauri-src/binaries
 
 # An LGPL ffmpeg built inside the repo (docs/ffmpeg-build.md suggests a
 # sibling directory, but a checkout-local build must not get committed)

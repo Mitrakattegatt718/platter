@@ -5,6 +5,11 @@ a hand-written C bridge. macOS only.
 
 ## Build and run
 
+- The Rust/Tauri half lives in **`tauri-src/`**, not the conventional
+  `src-tauri/` — `src/` is React only. The Tauri CLI locates it by searching
+  for `tauri.conf.json`, not by that directory name, so `npm run tauri …` works
+  unchanged; anything spelling the path itself (`--manifest-path`, the shell
+  scripts, CI, the `build` symlink) has to say `tauri-src`.
 - Cargo is **not** on `PATH` here. Export it first:
   `export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"`
 - **Always build releases with `npm run bundle`**, never bare `npm run tauri build`.
@@ -17,7 +22,7 @@ a hand-written C bridge. macOS only.
 - A bare `tauri build` after a bundle leaves a stale `_CodeSignature`, and the
   `.app` then fails to launch from Finder with LaunchServices error `-600`.
   Running `npm run bundle` fixes it, because bundling re-signs last.
-- `src-tauri/binaries/` is gitignored. A fresh clone must run `./stage-ffmpeg.sh`
+- `tauri-src/binaries/` is gitignored. A fresh clone must run `./stage-ffmpeg.sh`
   before its first build or `externalBin` fails.
 - Quit the app with `pkill -x platter-tauri`. AppleScript
   `tell application "platter-tauri"` silently fails — the bundle is named
@@ -75,7 +80,7 @@ a hand-written C bridge. macOS only.
   rather than a literal.
 - `otool -L` prints the file's own path as its first line. Filtering its output
   for build-machine paths without `tail -n +2` makes the check match itself.
-- Every icon in `src-tauri/icons/` is **generated**. The two sources live in
+- Every icon in `tauri-src/icons/` is **generated**. The two sources live in
   `icons/sources/`; `./icons/sources/regenerate.sh` rebuilds the whole set.
   `npm run tauri -- icon` also emits `ios/` and `android/` unconditionally —
   the script deletes them, this app is macOS only. The icns encoder is not

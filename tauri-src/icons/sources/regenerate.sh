@@ -5,13 +5,13 @@
 # so Finder, Launchpad and Spotlight show it too — and so does the Dock once
 # the process is gone. light.png ships as the single alternate in ../alt/ and
 # is only ever applied to the Dock of a running app — see
-# src-tauri/src/app_icon.rs for why macOS allows nothing more than that.
+# tauri-src/src/app_icon.rs for why macOS allows nothing more than that.
 #
 # Needs python3 with Pillow. Run from anywhere.
 set -euo pipefail
 
 cd "$(dirname "$0")/../../.."
-SRC=src-tauri/icons/sources
+SRC=tauri-src/icons/sources
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -40,14 +40,14 @@ npm run tauri -- icon "$TMP/dark_1024.png"
 
 # The generator emits iOS and Android sets unconditionally. This app is macOS
 # only, and 64x64.png is referenced by nothing in tauri.conf.json.
-rm -rf src-tauri/icons/ios src-tauri/icons/android src-tauri/icons/64x64.png
+rm -rf tauri-src/icons/ios tauri-src/icons/android tauri-src/icons/64x64.png
 
 # The alternate set is exactly what is in ../alt/, and app_icon.rs pulls those
 # in with include_bytes!. A file left over from an earlier layout would not be
 # compiled in, only confusing — drop it rather than leave it lying next to the
 # one that is live.
-rm -f src-tauri/icons/alt/dark.png
-cp "$TMP/light_512.png" src-tauri/icons/alt/light.png
+rm -f tauri-src/icons/alt/dark.png
+cp "$TMP/light_512.png" tauri-src/icons/alt/light.png
 
 echo
 echo "done. bundle icon <- dark.png, ../alt/light.png <- light.png"

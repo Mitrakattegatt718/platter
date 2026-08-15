@@ -10,7 +10,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUNDLE="$ROOT/src-tauri/target/release/bundle"
+BUNDLE="$ROOT/tauri-src/target/release/bundle"
 APP="${1:-$BUNDLE/macos/Platter.app}"
 BIN="$APP/Contents/MacOS/platter-tauri"
 FRAMEWORKS="$APP/Contents/Frameworks"
@@ -133,7 +133,7 @@ echo "==> Checking deployment targets"
 # to the build machine's OS — the app then launches nowhere older, with dyld's
 # least helpful error. Rebuild the offending dependency with
 # MACOSX_DEPLOYMENT_TARGET set (release.yml shows the ffmpeg build).
-MIN_OS="$(python3 -c 'import json;print(json.load(open("'"$ROOT"'/src-tauri/tauri.conf.json"))["bundle"]["macOS"]["minimumSystemVersion"])')"
+MIN_OS="$(python3 -c 'import json;print(json.load(open("'"$ROOT"'/tauri-src/tauri.conf.json"))["bundle"]["macOS"]["minimumSystemVersion"])')"
 minos_fail=0
 while IFS= read -r macho; do
   case "$(file -b "$macho")" in *Mach-O*) ;; *) continue ;; esac
@@ -159,7 +159,7 @@ echo "==> Repacking DMG"
 # this build is Apple Silicon-only, staged beside an /Applications symlink so
 # the DMG has a drag-to-install affordance instead of inviting users to run
 # the app from a read-only image.
-VERSION="$(python3 -c 'import json;print(json.load(open("'"$ROOT"'/src-tauri/tauri.conf.json"))["version"])')"
+VERSION="$(python3 -c 'import json;print(json.load(open("'"$ROOT"'/tauri-src/tauri.conf.json"))["version"])')"
 ARCH="$(uname -m)"
 DMG="$BUNDLE/dmg/Platter_${VERSION}_${ARCH}.dmg"
 mkdir -p "$BUNDLE/dmg"

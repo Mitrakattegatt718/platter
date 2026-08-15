@@ -39,7 +39,7 @@ will supply the exact versions bundled in a given release.
 
 ## Statically linked into the application binary
 
-Rust crates from `src-tauri/Cargo.toml` and their transitive dependencies —
+Rust crates from `tauri-src/Cargo.toml` and their transitive dependencies —
 principally Tauri, tokio, serde, and `lofty` — are permissively licensed
 (MIT or Apache-2.0). Frontend dependencies from `package.json` — React,
 `@base-ui/react`, `@tanstack/react-virtual`, Tailwind CSS, `lucide-react` —
@@ -49,7 +49,7 @@ Generate the current, exact inventory with:
 
 ```sh
 cargo install cargo-about   # once
-cargo about generate --output-file licenses.html   # in src-tauri/
+cargo about generate --output-file licenses.html   # in tauri-src/
 npx license-checker --production --summary          # at the repo root
 ```
 
