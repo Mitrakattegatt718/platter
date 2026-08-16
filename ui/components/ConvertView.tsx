@@ -23,6 +23,7 @@ import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { notifyIfBackground } from "@/lib/notify";
+import { unsubscribe } from "@/lib/events";
 // Aliased: `log` in this file is the job's own on-screen ring buffer.
 import { log as sessionLog } from "@/lib/log";
 import { toastError } from "@/lib/toast";
@@ -202,34 +203,28 @@ function ConvertViewImpl({
       p.catch((e) => console.error("convert event subscription failed:", e));
     }
     return () => {
-      unlistenProgress.then((f) => f(), () => {});
-      unlistenLog.then((f) => f(), () => {});
-      unlistenItems.then((f) => f(), () => {});
-      unlistenDone.then((f) => f(), () => {});
+      void unsubscribe(unlistenProgress);
+      void unsubscribe(unlistenLog);
+      void unsubscribe(unlistenItems);
+      void unsubscribe(unlistenDone);
     };
   }, [destKind, onLibraryChanged, onProgressChange]);
 
-  async function addFiles() {
-    const picked = await openDialog({
-      multiple: true,
-      filters: [
-        {
-          name: "Audio",
-          extensions: [
-            "mp3", "m4a", "aac",
-            "flac", "alac", "wav", "wave", "aif", "aiff", "aifc",
-            "ape", "wv", "tta", "dsf", "dff", "shn", "caf", "w64", "rf64", "cue",
-          ],
-        },
-      ],
-    });
-    if (!picked) return;
-    await stage(Array.isArray(picked) ? picked : [picked]);
-  }
-
-  async function addFolder() {
-    const picked = await openDialog({ directory: true, multiple: false });
-    if (typeof picked === "string") await stage([picked]);
+  /** Files and a folder were two buttons only because the dialog plugin makes
+   * `directory` a mode switch. NSOpenPanel does not, so this is one panel and
+   * one call; the queue never cared which kind of path it was handed. */
+  async function addMusic() {
+    let picked: string[];
+    try {
+      picked = await api.pickMusic();
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    // Cancelling is not a failure, and staging nothing would clear the error
+    // line for no reason.
+    if (picked.length === 0) return;
+    await stage(picked);
   }
 
   async function stage(paths: string[]) {

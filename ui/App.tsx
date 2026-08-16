@@ -48,6 +48,7 @@ import {
   type TrackGroup,
 } from "@/lib/grouping";
 import { notifyIfBackground } from "@/lib/notify";
+import { unsubscribe } from "@/lib/events";
 import { log } from "@/lib/log";
 import { toast, toastError } from "@/lib/toast";
 import type {
@@ -288,10 +289,7 @@ export default function App() {
       toastError("Progress updates unavailable", String(e)),
     );
     return () => {
-      unlisten.then(
-        (fn) => fn(),
-        () => {},
-      );
+      void unsubscribe(unlisten);
     };
   }, []);
 
@@ -308,10 +306,7 @@ export default function App() {
     });
     unlisten.catch(() => {});
     return () => {
-      unlisten.then(
-        (fn) => fn(),
-        () => {},
-      );
+      void unsubscribe(unlisten);
     };
   }, []);
 
@@ -369,10 +364,7 @@ export default function App() {
       toastError("Drag-and-drop import unavailable", String(e)),
     );
     return () => {
-      unlisten.then(
-        (fn) => fn(),
-        () => {},
-      );
+      void unsubscribe(unlisten);
     };
   }, [run, handleImportResult]);
 
