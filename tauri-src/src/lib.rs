@@ -4,6 +4,7 @@ pub mod convert;
 pub mod convert_job;
 pub mod fsinfo;
 pub mod gpod;
+pub mod logging;
 // Public so tests/ can drive the iTunesDB write path through the real FFI.
 // Nothing outside this crate consumes it at runtime.
 pub mod library;
@@ -21,6 +22,14 @@ pub fn run() {
         log::error!("panic: {info}");
         eprintln!("panic: {info}");
     }));
+
+    // Before the plugin below opens its file: last session's log is moved
+    // aside so this one starts empty. The identifier comes off the generated
+    // context rather than an AppHandle, which does not exist yet.
+    let context = tauri::generate_context!();
+    if let Some(dir) = logging::log_dir(&context.config().identifier) {
+        logging::rotate(&dir);
+    }
 
     tauri::Builder::default()
         .plugin(
@@ -42,6 +51,16 @@ pub fn run() {
         .manage(library::new_shared())
         .manage(convert_job::new_queue())
         .setup(|app| {
+            // First lines of the session, and the earliest point they can be
+            // written — the plugin's logger is installed as the plugin starts.
+            for line in logging::session_header(
+                app.package_info().version.to_string().as_str(),
+                &logging::macos_version(),
+                std::env::consts::ARCH,
+            ) {
+                log::info!("{line}");
+            }
+
             // Covers staged by a previous run: a crash or a force-quit leaves
             // them behind, and nothing else ever removes them. Safe here and
             // only here — no import can be in flight before setup returns.
@@ -142,7 +161,10 @@ pub fn run() {
             commands::convert_estimate,
             commands::convert_start,
             commands::cancel_convert,
+            logging::ui_log,
+            logging::log_path,
+            logging::export_logs,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }

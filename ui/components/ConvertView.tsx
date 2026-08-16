@@ -21,6 +21,8 @@ import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { notifyIfBackground } from "@/lib/notify";
+// Aliased: `log` in this file is the job's own on-screen ring buffer.
+import { log as sessionLog } from "@/lib/log";
 import { toastError } from "@/lib/toast";
 import type {
   ConvertItemBatch,
@@ -154,6 +156,14 @@ function ConvertViewImpl({
       });
     });
     const unlistenDone = listen<JobSummary>("convert:done", (e) => {
+      // The outcome only, never the per-file progress stream — a 5000-track
+      // job would otherwise be the entire log.
+      sessionLog.info(
+        "convert.done",
+        `${e.payload.converted} converted, ${e.payload.failed} failed${
+          e.payload.cancelled ? ", cancelled" : ""
+        }`,
+      );
       setSummary(e.payload);
       setRunning(false);
       setProgress(null);

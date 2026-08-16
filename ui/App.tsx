@@ -47,6 +47,7 @@ import {
   type TrackGroup,
 } from "@/lib/grouping";
 import { notifyIfBackground } from "@/lib/notify";
+import { log } from "@/lib/log";
 import { toast, toastError } from "@/lib/toast";
 import type {
   AppView,
@@ -152,15 +153,28 @@ export default function App() {
   const isOpenRef = useRef(isOpen);
   isOpenRef.current = isOpen;
 
+  // Logged from the persistence effects rather than the handlers: menu,
+  // keyboard shortcut and restore-at-launch all land here, so one line each
+  // covers every way the setting can move. The mount run records the state the
+  // session started in, which is the first thing a report needs.
   useEffect(() => {
     localStorage.setItem("trackGrouping", grouping);
+    log.info("library.grouping", grouping);
   }, [grouping]);
   useEffect(() => {
     localStorage.setItem("trackSort", sort);
+    log.info("library.sort", sort);
   }, [sort]);
   useEffect(() => {
     localStorage.setItem("appView", view);
+    log.info("view.change", view);
   }, [view]);
+
+  // The deferred value, not the live one: this settles once when typing stops
+  // instead of writing a line per keystroke.
+  useEffect(() => {
+    if (deferredSearch) log.info("library.search", deferredSearch);
+  }, [deferredSearch]);
 
   // ⌘1 / ⌘2 / ⌘3 switch tabs, the way a native app's View menu would; ⌘,
   // opens Settings, which every Mac app binds.
@@ -332,10 +346,17 @@ export default function App() {
       } else if (kind === "drop") {
         setIsDropTarget(false);
         if (!isOpenRef.current) {
+          log.warn("drop.rejected", "no iPod connected");
           setLastError("Connect an iPod before adding songs.");
           return;
         }
         const paths = event.payload.paths;
+        // A few real paths, not just a count: an import that fails on one file
+        // in a folder is unreproducible without knowing what was dropped.
+        log.info(
+          "drop.files",
+          `${paths.length} — ${paths.slice(0, 3).join(", ")}${paths.length > 3 ? " …" : ""}`,
+        );
         if (paths.length > 0) {
           run(api.importFiles(paths)).then(handleImportResult);
         }

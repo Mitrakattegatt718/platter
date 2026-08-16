@@ -2,6 +2,8 @@
 // shape the artwork cache uses. Kept outside React so anything (event
 // listeners, window.onerror, api helpers) can raise one without a hook.
 
+import { log } from "./log";
+
 export type ToastKind = "error" | "success" | "info";
 
 export interface Toast {
@@ -69,6 +71,13 @@ export function toast(
     }
     return dup.id;
   }
+
+  // Every toast is logged: this is the whole of what the app ever said to the
+  // user, so a report of "it showed me an error" can be matched to the line
+  // that raised it. Repeats above take the early return and log once.
+  const spoken = opts.detail ? `${title} — ${opts.detail}` : title;
+  if (kind === "error") log.error("toast.error", spoken);
+  else log.info(`toast.${kind}`, spoken);
 
   const t: Toast = { id: nextId++, kind, title, detail: opts.detail, sticky: opts.sticky };
   const next = [...toasts, t];

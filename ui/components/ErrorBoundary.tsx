@@ -1,4 +1,5 @@
 import React from "react";
+import { log } from "@/lib/log";
 
 /** A render error in a webview app blanks the whole window with no way back —
  * worse than a native crash, because nothing is logged where the user can see
@@ -15,6 +16,9 @@ export class ErrorBoundary extends React.Component<
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error("Platter render error:", error, info.componentStack);
+    // The component stack is the only thing that says *where*, and this screen
+    // is the end of the session — the log file is where it has to survive.
+    log.error("render.crash", `${error.message}${info.componentStack ?? ""}`);
   }
 
   render() {

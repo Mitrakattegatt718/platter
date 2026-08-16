@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { DeviceGlyph } from "@/components/DeviceGlyph";
 import { api } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
+import { log } from "@/lib/log";
 import { sameVolumes } from "@/lib/volumes";
 import type { VolumeInfo } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -98,6 +99,8 @@ export function DisconnectedView({
   const [scanError, setScanError] = useState<string | null>(null);
   const [connectingPath, setConnectingPath] = useState<string | null>(null);
   const connectingRef = useRef<string | null>(null);
+  /** The list the log last described, so a repeated scan stays silent. */
+  const loggedVolumes = useRef<VolumeInfo[] | null>(null);
 
   const refresh = useCallback((silent = false) => {
     if (!silent) setScanning(true);
@@ -108,6 +111,18 @@ export function DisconnectedView({
         // rescan below runs every 2.5s for as long as this view is up, and a
         // fresh array each time re-rendered the whole list — and re-sorted it —
         // to draw exactly what was already on screen.
+        // Only the transitions, for the same reason the array is reused
+        // below: the poll runs every 2.5s and its steady state says nothing.
+        // "My iPod never shows up" is the report this line answers. Kept out
+        // of the updater — StrictMode runs those twice, and a log line is a
+        // side effect.
+        if (!sameVolumes(loggedVolumes.current, next)) {
+          loggedVolumes.current = next;
+          log.info(
+            "volumes.change",
+            next.map((v) => `${v.path}${v.isIpod ? " (ipod)" : ""}`).join(", ") || "none",
+          );
+        }
         setVolumes((prev) => (sameVolumes(prev, next) ? prev : next));
         setScanError(null);
       })

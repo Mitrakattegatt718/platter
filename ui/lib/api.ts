@@ -1,4 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { describeError, log, summarizeArgs } from "./log";
 import type {
   AppIconInfo,
   ConvertEstimateResult,
@@ -19,6 +20,39 @@ import type {
 /** Fields set_field can stamp across a selection — string-valued ones only;
  * the numeric fields are per-track by nature. */
 export type BulkField = "artist" | "albumArtist" | "album" | "composer" | "genre";
+
+/** Commands too frequent to narrate. `get_artwork` runs once per visible
+ * thumbnail — a scroll through a large library is thousands of calls.
+ * `list_volumes` is polled every 2.5s for as long as no iPod is connected, so
+ * a log that traced it would be nothing but volume scans by the time anyone
+ * read it; `DisconnectedView` logs the scans that actually changed something
+ * instead. Failures still get a line either way: a cover that won't load, or a
+ * scan that can't run, is a real report. */
+const QUIET = new Set(["get_artwork", "list_volumes"]);
+
+/** The single IPC choke point, and so the natural place to trace it. Every
+ * call is logged with its shape, its duration and its outcome, which means the
+ * 24 command signatures on the Rust side need no instrumentation of their own.
+ *
+ * The pre-flush is what keeps the file readable: whatever the user did to
+ * cause this call is still sitting in the batch buffer, and this puts it above
+ * the call rather than up to 250ms below it. */
+async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const quiet = QUIET.has(command);
+  if (!quiet) {
+    log.info(`cmd.${command}`, summarizeArgs(args));
+    log.flush();
+  }
+  const started = performance.now();
+  try {
+    const result = await tauriInvoke<T>(command, args);
+    if (!quiet) log.info(`cmd.${command} ok`, `${Math.round(performance.now() - started)}ms`);
+    return result;
+  } catch (e) {
+    log.error(`cmd.${command} failed`, describeError(e));
+    throw e;
+  }
+}
 
 export const api = {
   listVolumes: () => invoke<VolumeInfo[]>("list_volumes"),
@@ -72,6 +106,11 @@ export const api = {
   convertStart: (target: TargetSpec, destination: Destination) =>
     invoke<JobSummary>("convert_start", { target, destination }),
   cancelConvert: () => invoke<void>("cancel_convert"),
+
+  /** Shown in Settings so the file is findable when export is what's broken. */
+  logPath: () => invoke<string>("log_path"),
+  /** Writes this session and the one before it to `dest`. */
+  exportLogs: (dest: string) => invoke<void>("export_logs", { dest }),
 };
 
 /** Artwork thumbnails keyed by track id + size. Two layers: a Promise map so
