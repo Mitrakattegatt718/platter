@@ -19,6 +19,12 @@
 </p>
 
   <p>
+    <a href="https://github.com/kolebayev/platter/releases/latest/download/Platter_macOS_arm64.dmg">
+      <img src="https://img.shields.io/badge/Download-DMG-0A84FF?style=for-the-badge&logo=apple&logoColor=white" alt="Download the latest DMG" />
+    </a>
+  </p>
+
+  <p>
     <a href="#installation"><b>Install guide</b></a>
     &nbsp;·&nbsp;
     <a href="#build-from-source">Build from source</a>
@@ -106,7 +112,9 @@ An iPod's database has no undo, so Platter is conservative by design:
 
 ## Installation
 
-Grab the DMG from the [latest release](https://github.com/kolebayev/platter/releases/latest).
+[**Download the latest DMG**](https://github.com/kolebayev/platter/releases/latest/download/Platter_macOS_arm64.dmg)
+— Apple Silicon, macOS 14+. Older versions and the changelog are on the
+[releases page](https://github.com/kolebayev/platter/releases).
 Between releases, every push to `main` leaves a build under **Artifacts** on
 its [CI run](https://github.com/kolebayev/platter/actions/workflows/ci.yml) —
 same recipe, downloadable with a GitHub account. Or

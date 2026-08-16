@@ -48,6 +48,15 @@ jobs:
           name: platter-dmg-${{ github.ref_name }}
           path: dist
 
+      # The versioned name is what a downloader wants on disk; a second copy
+      # under a fixed name is what gives the README a link that survives the
+      # next version. `/releases/latest/download/<asset>` resolves by exact
+      # filename, so a link to Platter_0.1.0_arm64.dmg would 404 the day 0.2.0
+      # ships — and a README's download button breaking is the one kind of
+      # breakage nobody reports.
+      - name: Add a fixed-name copy for the latest-release link
+        run: cp dist/Platter_*_arm64.dmg dist/Platter_macOS_arm64.dmg
+
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*.dmg
