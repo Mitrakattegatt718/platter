@@ -1,24 +1,50 @@
-import { memo, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { CircleDashed, Circle, CheckCircle2 } from "lucide-react";
+import { CircleDashed, Circle, CheckCircle2, Music } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { AddMusicButton } from "@/components/AddMusicButton";
+import { EmptyState } from "@/components/EmptyState";
 import { Highlight } from "@/components/Highlight";
 import { ArtworkThumb } from "@/components/ArtworkThumb";
 import { LibraryHeaderRow } from "@/components/LibraryHeaderRow";
+import {
+  DEFAULT_COLUMN_WIDTHS,
+  TRACK_COLUMNS,
+  columnGridTemplate,
+  fitColumnWidths,
+  readColumnWidths,
+  resizeTargetOf,
+  withColumnWidth,
+  writeColumnWidths,
+  type ColumnKey,
+  type ColumnWidths,
+  type ResizableColumnKey,
+} from "@/lib/columns";
 import { formatDuration } from "@/lib/format";
+import { log } from "@/lib/log";
 import { rowGroupId, type AlbumSubgroup, type ListRow, type TrackGroup } from "@/lib/grouping";
 import type { Track, TrackGrouping, TrackSort } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** One grid definition shared by the column heading and every row — the two
  * can't drift apart. (The SwiftUI app needed runtime geometry measurement for
- * this; here it's a single class string.) */
-const COLUMNS =
-  "grid grid-cols-[minmax(0,1fr)_120px_120px_80px_30px_40px_40px_36px_36px] items-center gap-2 px-4";
+ * this; here it's a single class string.) The track list now sizes its columns
+ * at runtime, so the widths arrive through a custom property set on the list
+ * container rather than baked into the class; see `lib/columns.ts` for why. */
+const COLUMNS = "grid grid-cols-[var(--track-cols)] items-center gap-2 px-4";
+
+const ALIGN = { left: "", center: "text-center", right: "text-right" } as const;
+
+/** The grid's own box, inside the `px-4` the rows and heading share. */
+function contentWidth(root: HTMLElement): number {
+  return root.clientWidth - 32;
+}
 
 type SelState = "all" | "some" | "none";
 
 function TrackListImpl({
   rows,
+  trackCount,
   searchValue,
   searchQuery,
   onSearchChange,
@@ -78,6 +104,130 @@ function TrackListImpl({
    * :hover on an ancestor — each row reports its section id instead. */
   const [hoveredGroup, setHoveredGroup] = useState<string | null>(null);
 
+  /** Owns the column widths; `gridRef` is the element the grid template is
+   * inherited from, and the one a drag writes to directly. */
+  const [widths, setWidths] = useState(readColumnWidths);
+  const gridRef = useRef<HTMLDivElement>(null);
+
+  const commitWidths = useCallback((next: ColumnWidths) => {
+    setWidths(next);
+    writeColumnWidths(next);
+    // Once per gesture, not per pointermove — this runs on release. The
+    // template rather than the object: a nested object logs as its keys, and
+    // the widths are the whole point of the line.
+    log.info("library.columns", columnGridTemplate(next));
+  }, []);
+
+  /** How much row there is to lay the columns out in. Observing the row and
+   * not the window because the list shares its width with the inspector pane,
+   * which is draggable too. */
+  const [room, setRoom] = useState(0);
+  useEffect(() => {
+    const root = gridRef.current;
+    if (!root) return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      // Off the observer's own delivery. Setting state here re-renders inside
+      // the callback, and WebKit then reports "ResizeObserver loop completed
+      // with undelivered notifications" — which main.tsx's window.onerror
+      // turned into a "Something went wrong" toast at every tab switch.
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const width = contentWidth(root);
+        // A hidden tab measures zero. Keeping the last real width means
+        // coming back to Library doesn't briefly fit the columns to nothing.
+        if (width > 0) setRoom(width);
+      });
+    });
+    observer.observe(root);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, []);
+
+  /** What actually gets drawn: the stored widths, narrowed only as far as this
+   * row's width forces.
+   *
+   * Fitting is a rendering decision, never a write. Title takes the slack, so
+   * "the fixed columns fit" and "Title is visible" are different claims — at
+   * 958px of fixed columns in a 958px box the grid is valid and Title is zero
+   * wide, its heading printed under Artist's. But a row is narrow for all
+   * sorts of passing reasons (a window opening, a pane being dragged), and an
+   * earlier version of this wrote the narrowed widths back: each transient
+   * layout ate the user's columns a little more, irreversibly, because fitting
+   * only ever shrinks. Keeping intent and display apart means widening the
+   * window gives back exactly what was set. */
+  const shownWidths = useMemo(() => fitColumnWidths(widths, room), [widths, room]);
+
+  const paintWidths = useCallback(
+    (next: ColumnWidths, within: number) => {
+      gridRef.current?.style.setProperty(
+        "--track-cols",
+        columnGridTemplate(fitColumnWidths(next, within)),
+      );
+    },
+    [],
+  );
+
+  /** Pointer-driven resize. Listeners go on the handle rather than the window
+   * because the handle has pointer capture: it keeps receiving moves once the
+   * cursor leaves it, and a lost capture (a system gesture, a dragged-away
+   * window) arrives as pointercancel, which ends the drag with what we have
+   * instead of stranding the listeners.
+   *
+   * Nothing calls setState until the pointer comes up. React re-rendering a
+   * virtualized list per pointermove is exactly what the custom property is
+   * here to avoid; the DOM is written straight, and state catches up once. */
+  const beginResize = useCallback(
+    (key: ResizableColumnKey, sign: 1 | -1, event: React.PointerEvent<HTMLElement>) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const handle = event.currentTarget;
+      const startX = event.clientX;
+      const startWidth = widths[key];
+      let next = widths;
+      handle.setPointerCapture(event.pointerId);
+      const onMove = (e: PointerEvent) => {
+        // Stored raw, drawn fitted. Dragging past the point where Title hits
+        // its floor stops moving the edge, and the width it stopped at is
+        // still remembered — widen the window and the rest of the drag is
+        // there. Committing the fitted value instead would silently rewrite
+        // every other column to pay for this one.
+        next = withColumnWidth(widths, key, startWidth + sign * (e.clientX - startX));
+        paintWidths(next, room);
+      };
+      const onEnd = () => {
+        handle.removeEventListener("pointermove", onMove);
+        handle.removeEventListener("pointerup", onEnd);
+        handle.removeEventListener("pointercancel", onEnd);
+        commitWidths(next);
+      };
+      handle.addEventListener("pointermove", onMove);
+      handle.addEventListener("pointerup", onEnd);
+      handle.addEventListener("pointercancel", onEnd);
+    },
+    [widths, paintWidths, commitWidths],
+  );
+
+  const nudgeWidth = useCallback(
+    (key: ResizableColumnKey, delta: number) =>
+      commitWidths(withColumnWidth(widths, key, widths[key] + delta)),
+    [widths, commitWidths],
+  );
+
+  const resetWidth = useCallback(
+    (key: ResizableColumnKey) =>
+      commitWidths(withColumnWidth(widths, key, DEFAULT_COLUMN_WIDTHS[key])),
+    [widths, commitWidths],
+  );
+
+  const resetAllWidths = useCallback(
+    () => commitWidths({ ...DEFAULT_COLUMN_WIDTHS }),
+    [commitWidths],
+  );
+
+
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -116,42 +266,71 @@ function TrackListImpl({
   }, [rows, selection]);
 
   return (
-    <div className="relative flex h-full min-w-0 flex-col">
-      <LibraryHeaderRow
-        searchValue={searchValue}
-        onSearchChange={onSearchChange}
-        selectedCount={selection.size}
-        onDeselectAll={onDeselectAll}
-        onAdd={onAdd}
-        addDisabled={addDisabled}
-        grouping={grouping}
-        onGroupingChange={onGroupingChange}
-        sort={sort}
-        onSortChange={onSortChange}
-      />
+    <div
+      ref={gridRef}
+      className="relative flex h-full min-w-0 flex-col"
+      style={{ "--track-cols": columnGridTemplate(shownWidths) } as CSSProperties}
+    >
+      {/* The whole row, not just its Add button, waits for there to be music.
+          Every control on it acts on a track list — search filters one, View
+          groups and sorts one, Deselect clears a selection inside one — so on
+          an empty iPod it is a strip of controls for a thing that does not
+          exist, sitting above a placeholder whose whole job is to say so.
+          Gated on trackCount rather than rows.length: a search that matches
+          nothing still needs its own field to clear. */}
+      {trackCount > 0 && (
+        <LibraryHeaderRow
+          searchValue={searchValue}
+          onSearchChange={onSearchChange}
+          selectedCount={selection.size}
+          onDeselectAll={onDeselectAll}
+          onAdd={onAdd}
+          addDisabled={addDisabled}
+          grouping={grouping}
+          onGroupingChange={onGroupingChange}
+          sort={sort}
+          onSortChange={onSortChange}
+          onResetColumns={resetAllWidths}
+        />
+      )}
 
+      {/* Headings only over something to head. On an empty iPod nine labels
+          across an empty pane describe a table that isn't there, and the
+          resize handles under them adjust columns nobody can see. */}
       <div
         className={cn(
           COLUMNS,
-          "border-b py-1 text-[11px] font-medium text-muted-foreground/80",
+          "border-b py-1 text-[11px] font-medium text-muted-foreground/80 select-none",
+          trackCount === 0 && "hidden",
         )}
       >
-        <span>Title</span>
-        <span>Artist</span>
-        <span>Album</span>
-        <span>Genre</span>
-        <span className="text-center">#</span>
-        <span className="text-center">Year</span>
-        <span className="text-right">Time</span>
-        <span className="text-right">kbps</span>
-        <span className="text-right" title="Plays recorded by the iPod">
-          Plays
-        </span>
+        {TRACK_COLUMNS.map((col) => (
+          <span key={col.key} className={cn("relative", ALIGN[col.align])} title={col.hint}>
+            {col.label}
+            <ColumnResizer
+              column={col.key}
+              label={col.label}
+              onBegin={beginResize}
+              onNudge={nudgeWidth}
+              onReset={resetWidth}
+            />
+          </span>
+        ))}
       </div>
+
+      {rows.length === 0 ? (
+        <EmptyList
+          trackCount={trackCount}
+          query={searchQuery}
+          onAdd={onAdd}
+          addDisabled={addDisabled}
+          onClearSearch={() => onSearchChange("")}
+        />
+      ) : null}
 
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto select-none"
+        className={cn("flex-1 overflow-y-auto select-none", rows.length === 0 && "hidden")}
         onMouseLeave={() => setHoveredGroup(null)}
       >
         <div
@@ -227,6 +406,100 @@ function TrackListImpl({
  * into no-ops. `searchValue` still changes per keystroke, which is correct:
  * the search field lives in here. */
 export const TrackList = memo(TrackListImpl);
+
+/** The divider at a column's right edge.
+ *
+ * Sits in the grid gap and overhangs it slightly, so the hit target is ~10px
+ * wide while the line it draws is 1px — a divider you have to aim at is worse
+ * than no divider. The line is invisible until the pointer or focus is on it;
+ * nine permanently drawn rules across the heading would read as a table
+ * border, which this list does not otherwise have.
+ *
+ * Double-click restores this one column; the View menu restores them all.
+ * Arrows move it 8px, shift-arrows 1px, for anyone who can't drag. */
+function ColumnResizer({
+  column,
+  label,
+  onBegin,
+  onNudge,
+  onReset,
+}: {
+  column: ColumnKey;
+  label: string;
+  onBegin: (
+    key: ResizableColumnKey,
+    sign: 1 | -1,
+    event: React.PointerEvent<HTMLElement>,
+  ) => void;
+  onNudge: (key: ResizableColumnKey, delta: number) => void;
+  onReset: (key: ResizableColumnKey) => void;
+}) {
+  const { key, sign } = resizeTargetOf(column);
+  return (
+    <span
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={`Resize the ${label} column`}
+      tabIndex={0}
+      className="group absolute -inset-y-1 -right-[9px] z-10 w-[10px] cursor-col-resize touch-none focus:outline-none"
+      onPointerDown={(e) => onBegin(key, sign, e)}
+      onDoubleClick={() => onReset(key)}
+      onKeyDown={(e) => {
+        const step = e.shiftKey ? 1 : 8;
+        if (e.key === "ArrowLeft") onNudge(key, -sign * step);
+        else if (e.key === "ArrowRight") onNudge(key, sign * step);
+        else return;
+        e.preventDefault();
+      }}
+    >
+      <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border opacity-0 transition-opacity group-hover:opacity-100 group-focus:opacity-100 motion-reduce:transition-none" />
+    </span>
+  );
+}
+
+/** An empty list is two different situations and they need opposite things
+ * said. An iPod with nothing on it is not a problem to explain — it is the
+ * start of the job, so the one action that moves it forward gets the middle of
+ * the pane instead of a 60px button in a toolbar. A search that matched
+ * nothing is the user's own doing and already reversible; offering Add there
+ * would answer a question nobody asked. */
+function EmptyList({
+  trackCount,
+  query,
+  onAdd,
+  addDisabled,
+  onClearSearch,
+}: {
+  trackCount: number;
+  query: string;
+  onAdd: () => void;
+  addDisabled: boolean;
+  onClearSearch: () => void;
+}) {
+  const empty = trackCount === 0;
+  return (
+    <EmptyState
+      // No icon on the search branch: a note over "nothing matched" illustrates
+      // the library, not the result, and the pane already has the query in it.
+      icon={empty ? <Music className="size-10" /> : undefined}
+      title={empty ? "No music on this iPod" : "No tracks match your search"}
+      body={
+        empty
+          ? "Add MP3 or M4A files directly, or lossless files to convert on the way in. You can also drop files and folders anywhere on this window."
+          : `Nothing here matches “${query}”.`
+      }
+      action={
+        empty ? (
+          <AddMusicButton onClick={onAdd} disabled={addDisabled} prominent />
+        ) : (
+          <Button variant="outline" size="sm" onClick={onClearSearch}>
+            Clear Search
+          </Button>
+        )
+      }
+    />
+  );
+}
 
 const SELECTION_ICONS = { all: CheckCircle2, some: CircleDashed, none: Circle } as const;
 

@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
@@ -39,6 +40,7 @@ export function LibraryHeaderRow({
   onGroupingChange,
   sort,
   onSortChange,
+  onResetColumns,
 }: {
   searchValue: string;
   onSearchChange: (value: string) => void;
@@ -50,6 +52,7 @@ export function LibraryHeaderRow({
   onGroupingChange: (grouping: TrackGrouping) => void;
   sort: TrackSort;
   onSortChange: (sort: TrackSort) => void;
+  onResetColumns: () => void;
 }) {
   const selecting = selectedCount >= 2;
   return (
@@ -128,6 +131,11 @@ export function LibraryHeaderRow({
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>
+          <DropdownMenuSeparator />
+          {/* The way back from a drag that squeezed a column to nothing —
+              double-clicking a divider only restores the column it belongs
+              to, and by then the one you want may be too narrow to aim at. */}
+          <DropdownMenuItem onClick={onResetColumns}>Reset Column Widths</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
