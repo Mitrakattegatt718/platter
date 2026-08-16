@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Check, FileText } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,6 +36,7 @@ export function SettingsDialog({
   const [selected, setSelected] = useState<string | null>(null);
   const [theme, setTheme] = useState<ThemePref>(() => readThemePref());
   const [logFile, setLogFile] = useState<string | null>(null);
+  const [version, setVersion] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,6 +56,11 @@ export function SettingsDialog({
     // Its own request: the path is only ever shown, and a failure to resolve
     // it must not cost the user the icon picker.
     api.logPath().then(setLogFile, () => setLogFile(null));
+    // Straight off the bundle rather than a constant in the frontend, so
+    // tauri.conf.json stays the one place the number is written. Same reason
+    // it is fetched rather than baked in at build: a UI that can disagree with
+    // the binary it ships in is worse than no version at all.
+    getVersion().then(setVersion, () => setVersion(null));
   }, [open]);
 
   async function exportLogs() {
@@ -226,6 +233,22 @@ export function SettingsDialog({
               </p>
             )}
           </div>
+
+          {/* Last line of the dialog, in the same muted register as the log
+              path above it — both are things a user reads out into a bug
+              report rather than settings they can change. Absent, not
+              "unknown", when it fails to resolve: a version nobody can act on
+              is worth less than the space it takes. */}
+          {version && (
+            <p className="border-t pt-3 text-xs text-muted-foreground">
+              {/* The word, not a `-alpha` suffix on the number: that string
+                  becomes CFBundleShortVersionString, which macOS expects to be
+                  numeric and shows verbatim in Get Info. Semver already says
+                  this much — anything below 1.0 promises nothing — but only to
+                  a reader who knows it does. */}
+              Platter {version} · Alpha
+            </p>
+          )}
 
           {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
