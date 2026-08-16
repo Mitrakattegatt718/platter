@@ -305,8 +305,7 @@ function ConvertViewImpl({
           adding={adding}
           running={running}
           statuses={statuses}
-          onAddFiles={addFiles}
-          onAddFolder={addFolder}
+          onAddMusic={addMusic}
           onRemove={removeRow}
           onClear={clearRows}
         />
@@ -523,8 +522,7 @@ function SourceList({
   adding,
   running,
   statuses,
-  onAddFiles,
-  onAddFolder,
+  onAddMusic,
   onRemove,
   onClear,
 }: {
@@ -533,66 +531,98 @@ function SourceList({
   /** Staging the queue is locked while a job reads from it. */
   running: boolean;
   statuses: Map<number, ConvertItemUpdate>;
-  onAddFiles: () => void;
-  onAddFolder: () => void;
+  onAddMusic: () => void;
   onRemove: (id: number) => void;
   onClear: () => void;
 }) {
+  // One button, one panel. Files and a folder were only ever two controls
+  // because the dialog plugin makes `directory` a mode switch; NSOpenPanel
+  // takes canChooseFiles and canChooseDirectories independently, so the choice
+  // the menu used to ask for is now made inside the picker, where the user can
+  // see what they are choosing.
+  //
+  // The toolbar copy. The empty state renders its own `prominent` one rather
+  // than reusing this: the two differ by exactly that flag, and threading it
+  // through a shared element would mean building the element where the flag is
+  // known, which is here twice over.
+  const addMusic = <AddMusicButton onClick={onAddMusic} disabled={adding || running} />;
+
   return (
     <div className="flex min-w-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 border-b px-3 py-2">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onAddFiles}
-          disabled={adding || running}
-        >
-          Add Files…
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onAddFolder}
-          disabled={adding || running}
-        >
-          Add Folder…
-        </Button>
-        <div className="flex-1" />
-        {adding && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
-        {rows.length > 0 && (
-          <>
-            <span className="text-xs tabular-nums text-muted-foreground">
-              {rows.length} file{rows.length === 1 ? "" : "s"}
-            </span>
-            <button
-              type="button"
-              onClick={onClear}
-              disabled={running}
-              className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:hover:text-muted-foreground"
-            >
-              Clear
-            </button>
-          </>
-        )}
-      </div>
+      {/* No toolbar over an empty queue. A strip of controls above a panel whose
+          whole message is "there is nothing here yet" splits the one action the
+          user has into two places and puts the smaller one first. With the queue
+          empty the empty state is the only thing on screen, so it carries the
+          buttons; the toolbar returns the moment there is something to manage. */}
+      {rows.length > 0 && (
+        // Same strip as the library's: `bg-muted/30` and gap-1.5, not a bare
+        // bordered row. Both sit in the same place under the same window chrome
+        // and hold the same Add button, and two toolbars that differ only in
+        // whether they have a background read as two different apps.
+        <div className="flex items-center gap-1.5 border-b bg-muted/30 px-3 py-2">
+          {addMusic}
+          <div className="flex-1" />
+          {adding && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
+          <span className="text-xs tabular-nums text-muted-foreground">
+            {rows.length} file{rows.length === 1 ? "" : "s"}
+          </span>
+          <button
+            type="button"
+            onClick={onClear}
+            disabled={running}
+            className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:hover:text-muted-foreground"
+          >
+            Clear
+          </button>
+        </div>
+      )}
 
       {rows.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center text-muted-foreground">
-          <Music2 className="size-10" />
-          <p className="text-sm font-medium">Nothing to Convert</p>
-          <p className="max-w-sm text-xs">
-            Add audio files or a folder. Platter reads each one, works out how big
-            the result will be, and tells you whether it fits before anything is
-            written.
-          </p>
-        </div>
+        <EmptyState
+          icon={<Music2 className="size-10" />}
+          title="Nothing to Convert"
+          body="Add audio files or a folder. Platter reads each one, works out how big the result will be, and tells you whether it fits before anything is written."
+          action={
+            <AddMusicButton onClick={onAddMusic} disabled={adding || running} prominent />
+          }
+        >
+          {/* Scanning a folder can run for a while before the first row lands,
+              and until it does this panel is all there is — without this the
+              window sits unchanged and the click reads as having missed. */}
+          {adding && (
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
+              Reading files…
+            </p>
+          )}
+        </EmptyState>
       ) : (
-        <SourcesVirtualized
-          rows={rows}
-          running={running}
-          statuses={statuses}
-          onRemove={onRemove}
-        />
+        <>
+          {/* The queue had none. Five unlabelled columns of codec names, sample
+              rates and durations leave the reader to work out which is which,
+              and the track list next door labels the same kind of table. Sits
+              outside the scroll container so it stays put, exactly as that one
+              does. The last column is the remove button and needs no word. */}
+          <div
+            className={cn(
+              QUEUE_COLUMNS,
+              "border-b py-1 text-[11px] font-medium text-muted-foreground/80 select-none",
+            )}
+          >
+            <span>Name</span>
+            <span>Status</span>
+            <span>Format</span>
+            <span>Rate</span>
+            <span className="text-right">Time</span>
+            <span />
+          </div>
+          <SourcesVirtualized
+            rows={rows}
+            running={running}
+            statuses={statuses}
+            onRemove={onRemove}
+          />
+        </>
       )}
     </div>
   );

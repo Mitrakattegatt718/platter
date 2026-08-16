@@ -1,5 +1,7 @@
 mod app_icon;
 mod commands;
+#[cfg(target_os = "macos")]
+mod picker;
 pub mod convert;
 pub mod convert_job;
 pub mod fsinfo;
@@ -155,6 +157,7 @@ pub fn run() {
             commands::remove_tracks,
             commands::get_artwork,
             commands::convert_formats,
+            commands::pick_music,
             commands::convert_add,
             commands::convert_remove,
             commands::convert_clear,

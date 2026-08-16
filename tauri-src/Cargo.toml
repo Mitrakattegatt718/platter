@@ -43,8 +43,20 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
   "NSApplication",
   "NSResponder",
   "NSImage",
+  # The combined file+folder open panel — see src/picker.rs. NSOpenPanel
+  # inherits NSSavePanel, which inherits NSWindow, so all three are needed to
+  # reach setCanChooseDirectories and runModal.
+  "NSOpenPanel",
+  "NSSavePanel",
+  "NSPanel",
+  "NSWindow",
 ] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSData"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "NSData",
+  "NSString",
+  "NSArray",
+  "NSURL",
+] }
 
 # The app is IPC + FFI bound; fat LTO with one codegen unit buys both size and
 # cross-crate inlining on the serde snapshot path. Nothing here relies on

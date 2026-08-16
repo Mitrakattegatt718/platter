@@ -98,6 +98,10 @@ export const api = {
     invoke<string | null>("get_artwork", { id, size }),
 
   convertFormats: () => invoke<FormatOption[]>("convert_formats"),
+  /** One open panel taking audio files *and* folders — the plugin's dialog
+   * splits those into two calls, so this goes through NSOpenPanel instead.
+   * Empty when the user cancels. */
+  pickMusic: () => invoke<string[]>("pick_music"),
   convertAdd: (paths: string[]) => invoke<SourceRow[]>("convert_add", { paths }),
   convertRemove: (ids: number[]) => invoke<SourceRow[]>("convert_remove", { ids }),
   convertClear: () => invoke<SourceRow[]>("convert_clear"),

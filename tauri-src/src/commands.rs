@@ -1026,6 +1026,18 @@ pub async fn convert_formats() -> Result<Vec<FormatOption>, String> {
     .await
 }
 
+/// One panel for both kinds of thing the queue accepts. Returns an empty list
+/// when the user cancels; see `picker` for why that is not an error.
+///
+/// Runs through `blocking` like every other command: `runModal` parks the
+/// calling thread until the panel is dismissed, and a tokio worker held for the
+/// length of a file dialog is a tokio worker the rest of the app cannot use.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn pick_music(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    blocking(move || crate::picker::pick_music(&app)).await
+}
+
 #[tauri::command]
 pub async fn convert_add(
     queue: State<'_, convert_job::SharedQueue>,
