@@ -51,6 +51,7 @@ jobs:
     continue-on-error: true
     env:
       LIBGPOD_VERSION: "0.8.3"
+      LIBGPOD_SHA256: "638a7959d04e95f1e62abad02bd33702e4e8dfef98485ac7d9d50395c37e955d"
       LIBGPOD_PREFIX: ${{ github.workspace }}/.libgpod
     steps:
       - uses: actions/checkout@v4
@@ -72,9 +73,12 @@ jobs:
 
       - name: Build libgpod from source
         if: steps.libgpod-cache.outputs.cache-hit != 'true'
+        # See build-dmg.yml for why this is Debian's mirror and not
+        # SourceForge, and why the hash is checked.
         run: |
           set -euo pipefail
-          curl -fsSL "https://sourceforge.net/projects/gtkpod/files/libgpod/libgpod-${LIBGPOD_VERSION}/libgpod-${LIBGPOD_VERSION}.tar.bz2/download" -o libgpod.tar.bz2
+          curl -fsSL "https://deb.debian.org/debian/pool/main/libg/libgpod/libgpod_${LIBGPOD_VERSION}.orig.tar.bz2" -o libgpod.tar.bz2
+          echo "${LIBGPOD_SHA256}  libgpod.tar.bz2" | shasum -a 256 --check --status
           tar xf libgpod.tar.bz2
           cd "libgpod-${LIBGPOD_VERSION}"
           ./configure --prefix="$LIBGPOD_PREFIX" \

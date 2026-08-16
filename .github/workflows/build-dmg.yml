@@ -37,6 +37,7 @@ jobs:
       dmg-name: ${{ steps.bundle.outputs.dmg-name }}
     env:
       LIBGPOD_VERSION: "0.8.3"
+      LIBGPOD_SHA256: "638a7959d04e95f1e62abad02bd33702e4e8dfef98485ac7d9d50395c37e955d"
       FFMPEG_VERSION: "7.1.1"
       LIBGPOD_PREFIX: ${{ github.workspace }}/.libgpod
       FFMPEG_PREFIX: ${{ github.workspace }}/.ffmpeg-lgpl
@@ -69,9 +70,15 @@ jobs:
 
       - name: Build libgpod from source
         if: steps.libgpod-cache.outputs.cache-hit != 'true'
+        # Debian's mirror of the upstream tarball, not SourceForge's own
+        # download endpoint: that one now answers 404 with an HTML error page,
+        # and its interstitial has no stable URL to pin. Debian carries the
+        # identical bytes, so the hash below is the upstream release's — and
+        # the reason a third-party mirror is safe to build from at all.
         run: |
           set -euo pipefail
-          curl -fsSL "https://sourceforge.net/projects/gtkpod/files/libgpod/libgpod-${LIBGPOD_VERSION}/libgpod-${LIBGPOD_VERSION}.tar.bz2/download" -o libgpod.tar.bz2
+          curl -fsSL "https://deb.debian.org/debian/pool/main/libg/libgpod/libgpod_${LIBGPOD_VERSION}.orig.tar.bz2" -o libgpod.tar.bz2
+          echo "${LIBGPOD_SHA256}  libgpod.tar.bz2" | shasum -a 256 --check --status
           tar xf libgpod.tar.bz2
           cd "libgpod-${LIBGPOD_VERSION}"
           ./configure --prefix="$LIBGPOD_PREFIX" \
