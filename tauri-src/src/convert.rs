@@ -1490,6 +1490,8 @@ fn convert_one(
 fn prepare_one(
     item: &WorkItem,
     out_dir: &Path,
+    layout: OutLayout,
+    names: &NameReserver,
     art_cache: &ArtCache,
     target: &TargetSpec,
     control: &ConvertControl,
@@ -1529,7 +1531,20 @@ fn prepare_one(
         return Prepared::Ready(item.src.clone()); // already iPod-spec ALAC
     }
 
-    let dst = out_dir.join(format!("{}.{}", item.dst_stem, target.format.ext()));
+    let ext = target.format.ext();
+    let dst = match layout {
+        OutLayout::Scratch => out_dir.join(format!("{}.{}", item.dst_stem, ext)),
+        // Drop the "12/" the scratch layout prefixes, and take a unique name in
+        // its place. A folder the user picked gets files, not a numbered
+        // directory per track.
+        OutLayout::UserFolder => {
+            let stem = Path::new(&item.dst_stem)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| item.dst_stem.clone());
+            out_dir.join(names.reserve(&stem, ext))
+        }
+    };
     if let Some(parent) = dst.parent() {
         if std::fs::create_dir_all(parent).is_err() {
             return Prepared::Rejected("couldn't create output directory".into());
@@ -1657,9 +1672,68 @@ impl ConvertControl {
 }
 
 /// Convert a batch on a worker pool. Results come back in input order.
+/// Where the batch is writing, which decides what the output directory is
+/// allowed to look like.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum OutLayout {
+    /// A scratch directory this app made and will delete. `dst_stem`'s
+    /// per-item subdirectory is free collision avoidance and nobody sees it.
+    Scratch,
+    /// A directory the user chose and keeps. The numbered subdirectories are an
+    /// implementation detail of the scratch layout and have no business being
+    /// there, so names are flattened and made unique instead.
+    UserFolder,
+}
+
+/// Reserves output filenames for `OutLayout::UserFolder`.
+///
+/// Flattening `12/Song` to `Song` is what re-introduces the collision the
+/// subdirectory existed to prevent — two albums both holding `01 Intro` now
+/// want one name. Workers race for it, so the check and the claim have to be
+/// one locked step; `exists` is consulted under the same lock because the
+/// user's folder may already hold a `Song.m4a` from an earlier run, and ffmpeg
+/// runs with `-y` and would overwrite it without a word.
+struct NameReserver {
+    dir: PathBuf,
+    taken: Mutex<HashSet<String>>,
+}
+
+impl NameReserver {
+    fn new(dir: &Path) -> Self {
+        NameReserver {
+            dir: dir.to_path_buf(),
+            taken: Mutex::new(HashSet::new()),
+        }
+    }
+
+    fn reserve(&self, stem: &str, ext: &str) -> String {
+        let mut taken = self.taken.lock().unwrap();
+        // Case-insensitively, because APFS is by default: "Song.m4a" and
+        // "song.m4a" are one file, and handing both out loses one of them.
+        let mut name = format!("{stem}.{ext}");
+        let mut n = 2;
+        while !taken.insert(name.to_lowercase()) || self.dir.join(&name).exists() {
+            name = format!("{stem} ({n}).{ext}");
+            n += 1;
+        }
+        name
+    }
+}
+
 pub fn prepare_batch(
     items: &[WorkItem],
     out_dir: &Path,
+    target: &TargetSpec,
+    control: &ConvertControl,
+    obs: &dyn ConvertObserver,
+) -> Vec<Prepared> {
+    prepare_batch_into(items, out_dir, OutLayout::Scratch, target, control, obs)
+}
+
+pub fn prepare_batch_into(
+    items: &[WorkItem],
+    out_dir: &Path,
+    layout: OutLayout,
     target: &TargetSpec,
     control: &ConvertControl,
     obs: &dyn ConvertObserver,
@@ -1668,7 +1742,16 @@ pub fn prepare_batch(
         return Vec::new();
     }
     let _ = std::fs::create_dir_all(out_dir);
-    let art_cache = ArtCache::new(out_dir);
+    // The art cache is scratch either way. Inside a scratch out_dir it is
+    // deleted with everything else; inside the user's folder it was simply left
+    // behind, which is how an `artcache` directory ended up sitting next to
+    // their music.
+    let art_dir = match layout {
+        OutLayout::Scratch => out_dir.to_path_buf(),
+        OutLayout::UserFolder => fresh_out_dir(),
+    };
+    let art_cache = ArtCache::new(&art_dir);
+    let names = NameReserver::new(out_dir);
 
     // Half the cores: ffmpeg's ALAC path is single-threaded but the decode +
     // resample chain still saturates a core; leave headroom for the UI.
@@ -1695,7 +1778,8 @@ pub fn prepare_batch(
                 let Some(item) = items.get(i) else { break };
                 let name = item.display();
                 obs.started(i, &name);
-                let prepared = prepare_one(item, out_dir, &art_cache, target, control, obs, i);
+                let prepared =
+                    prepare_one(item, out_dir, layout, &names, &art_cache, target, control, obs, i);
                 obs.item_done(i, &prepared);
                 *results[i].lock().unwrap() = Some(prepared);
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1703,6 +1787,13 @@ pub fn prepare_batch(
             });
         }
     });
+
+    // Only ever a scratch directory of our own making — the `UserFolder` branch
+    // above put it under the temp dir precisely so this line can be
+    // unconditional without ever reaching into the user's folder.
+    if layout == OutLayout::UserFolder {
+        let _ = std::fs::remove_dir_all(&art_dir);
+    }
 
     // Workers that broke out on the cancel flag never wrote a slot; those
     // items were never attempted and must not be reported as failures.
@@ -1843,6 +1934,74 @@ mod tests {
     /// track is unplayable with no error anywhere in the chain. Asserting the
     /// command merely exited 0 would not catch it — the codec and the
     /// extension both have to be checked.
+    #[test]
+    fn a_user_folder_gets_files_not_a_directory_per_track() {
+        let Some(tools) = tools() else {
+            eprintln!("skipping: ffmpeg not installed");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("platter-flat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Two sources with the same stem from different album folders — the
+        // exact collision the "12/" prefix existed to prevent. FLAC in, so the
+        // ALAC target has real work to do and cannot pass the source through.
+        let mut items = Vec::new();
+        for album in ["A", "B"] {
+            let src_dir = dir.join(format!("src-{album}"));
+            std::fs::create_dir_all(&src_dir).unwrap();
+            let src = src_dir.join("01 Intro.flac");
+            assert!(Command::new(&tools.ffmpeg)
+                .args([
+                    "-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=1", "-c:a", "flac",
+                ])
+                .arg(&src)
+                .status()
+                .unwrap()
+                .success());
+            items.push(WorkItem {
+                src,
+                // What the queue builds: a per-item subdirectory.
+                dst_stem: format!("{}/01 Intro", items.len()),
+                cue: None,
+                probe: None,
+            });
+        }
+
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let results = prepare_batch_into(
+            &items,
+            &out,
+            OutLayout::UserFolder,
+            &TargetSpec::alac(),
+            &ConvertControl::default(),
+            &ProgressOnly(&|_, _| {}),
+        );
+        for r in &results {
+            if let Prepared::Rejected(why) = r {
+                panic!("rejected: {why}");
+            }
+            assert!(matches!(r, Prepared::Ready(_)), "cancelled");
+        }
+
+        let mut entries: Vec<String> = std::fs::read_dir(&out)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        entries.sort();
+
+        // Files, not directories, and no `artcache` left sitting in there.
+        for name in &entries {
+            assert!(out.join(name).is_file(), "{name} should be a file");
+        }
+        assert_eq!(entries, vec!["01 Intro (2).m4a", "01 Intro.m4a"], "{entries:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_ipod_muxers_extension_warning_is_dropped() {
         // The literal ffmpeg emits, with the muxer tag it carries.

@@ -1363,7 +1363,17 @@ pub async fn convert_start(
             ),
         );
 
-        let prepared = convert::prepare_batch(&work, &out_dir, &target, &control, &events);
+        // The user's own folder must come out flat: the numbered subdirectories
+        // are collision avoidance for a scratch dir nobody sees, and exporting
+        // 16 files as 16 folders plus an `artcache` is not what "save to this
+        // folder" means.
+        let layout = if to_ipod {
+            convert::OutLayout::Scratch
+        } else {
+            convert::OutLayout::UserFolder
+        };
+        let prepared =
+            convert::prepare_batch_into(&work, &out_dir, layout, &target, &control, &events);
         events.maybe_flush(true);
 
         let cancelled = control.cancelled();
