@@ -497,18 +497,21 @@ pub async fn import_tracks(
     blocking(move || import_tracks_blocking(&app, &lib, items, false)).await
 }
 
+/// What `prepare_sources` returns, named because the tuple is three deep: the
+/// source to import per staged item, positionally (None where conversion
+/// rejected it); the failures, each carrying the index it belongs to; and the
+/// scratch directory holding the conversions, for the caller to sweep.
+type PreparedSources = (
+    Vec<Option<String>>,
+    Vec<(usize, String)>,
+    Option<std::path::PathBuf>,
+);
+
 /// Pre-lock conversion pass: any staged item that isn't natively playable
 /// (FLAC, WAV, hi-res ALAC, DSD…) is converted to iPod-spec ALAC first.
 /// Returns the per-item source to import (None = conversion rejected it,
 /// with the failure recorded), plus the scratch dir to sweep afterwards.
-fn prepare_sources(
-    app: &AppHandle,
-    items: &[PendingImport],
-) -> (
-    Vec<Option<String>>,
-    Vec<(usize, String)>,
-    Option<std::path::PathBuf>,
-) {
+fn prepare_sources(app: &AppHandle, items: &[PendingImport]) -> PreparedSources {
     let mut sources: Vec<Option<String>> = items
         .iter()
         .map(|item| Some(item.file_path.clone()))

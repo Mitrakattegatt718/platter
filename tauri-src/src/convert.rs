@@ -261,12 +261,9 @@ pub fn encoders() -> &'static Encoders {
 fn bundled_tool(name: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    for candidate in [dir.join(name), dir.join("..").join(name)] {
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
+    [dir.join(name), dir.join("..").join(name)]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
 }
 
 fn find_tool(name: &str) -> Option<PathBuf> {
@@ -362,10 +359,10 @@ pub fn target_rate(rate: u32) -> u32 {
     if rate == 0 {
         return 44100;
     }
-    if rate % 44100 == 0 {
+    if rate.is_multiple_of(44100) {
         return 44100;
     }
-    if rate % 48000 == 0 {
+    if rate.is_multiple_of(48000) {
         return 48000;
     }
     if rate <= 44100 {

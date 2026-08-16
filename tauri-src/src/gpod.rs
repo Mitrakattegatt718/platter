@@ -236,6 +236,23 @@ pub fn probe_device(mountpoint: &str) -> DeviceInfo {
     }
 }
 
+/// Takes ownership of a strdup'd C string (or NULL) and frees it.
+///
+/// # Safety
+///
+/// `ptr` must be NULL or a live pointer to a NUL-terminated string that the
+/// bridge allocated with `strdup`, and no one else may free it or read it
+/// afterwards — this call takes it. Every caller here is reading a field the
+/// C side handed over exactly once.
+pub unsafe fn take_c_string(ptr: *mut c_char) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    let s = std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned();
+    libc::free(ptr as *mut c_void);
+    Some(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,14 +367,4 @@ mod tests {
         assert_eq!(info.family, "unknown");
         assert!(!info.supported);
     }
-}
-
-/// Takes ownership of a strdup'd C string (or NULL) and frees it.
-pub unsafe fn take_c_string(ptr: *mut c_char) -> Option<String> {
-    if ptr.is_null() {
-        return None;
-    }
-    let s = std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned();
-    libc::free(ptr as *mut c_void);
-    Some(s)
 }
