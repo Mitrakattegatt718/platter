@@ -62,7 +62,12 @@ jobs:
         with:
           workspaces: tauri-src
       - name: Install build dependencies
-        run: brew install glib gdk-pixbuf libplist sqlite pkg-config autoconf automake libtool gettext intltool
+        # ffmpeg is here only so tauri-build finds the externalBin sidecars it
+        # refuses to build without. This is Homebrew's GPL build and the step
+        # below stages it with ALLOW_GPL_FFMPEG=1 — sound because this job
+        # compiles and tests and never produces a DMG. The build that ships
+        # gets its own LGPL ffmpeg in build-dmg.yml.
+        run: brew install glib gdk-pixbuf libplist sqlite pkg-config autoconf automake libtool gettext intltool ffmpeg
 
       - name: Cache libgpod
         id: libgpod-cache
