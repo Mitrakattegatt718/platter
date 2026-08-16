@@ -1,12 +1,12 @@
 mod app_icon;
 mod commands;
-#[cfg(target_os = "macos")]
-mod picker;
 pub mod convert;
 pub mod convert_job;
 pub mod fsinfo;
 pub mod gpod;
 pub mod logging;
+#[cfg(target_os = "macos")]
+mod picker;
 // Public so tests/ can drive the iTunesDB write path through the real FFI.
 // Nothing outside this crate consumes it at runtime.
 pub mod library;

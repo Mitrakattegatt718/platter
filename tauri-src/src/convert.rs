@@ -1778,8 +1778,9 @@ pub fn prepare_batch_into(
                 let Some(item) = items.get(i) else { break };
                 let name = item.display();
                 obs.started(i, &name);
-                let prepared =
-                    prepare_one(item, out_dir, layout, &names, &art_cache, target, control, obs, i);
+                let prepared = prepare_one(
+                    item, out_dir, layout, &names, &art_cache, target, control, obs, i,
+                );
                 obs.item_done(i, &prepared);
                 *results[i].lock().unwrap() = Some(prepared);
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1954,8 +1955,16 @@ mod tests {
             let src = src_dir.join("01 Intro.flac");
             assert!(Command::new(&tools.ffmpeg)
                 .args([
-                    "-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i",
-                    "sine=frequency=440:duration=1", "-c:a", "flac",
+                    "-hide_banner",
+                    "-v",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=1",
+                    "-c:a",
+                    "flac",
                 ])
                 .arg(&src)
                 .status()
@@ -1997,7 +2006,11 @@ mod tests {
         for name in &entries {
             assert!(out.join(name).is_file(), "{name} should be a file");
         }
-        assert_eq!(entries, vec!["01 Intro (2).m4a", "01 Intro.m4a"], "{entries:?}");
+        assert_eq!(
+            entries,
+            vec!["01 Intro (2).m4a", "01 Intro.m4a"],
+            "{entries:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

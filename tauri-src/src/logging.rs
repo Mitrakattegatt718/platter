@@ -29,7 +29,12 @@ pub const PREVIOUS_LOG_FILE: &str = "platter.previous.log";
 /// the layout is fixed and this can't drift from what Tauri computes.
 pub fn log_dir(identifier: &str) -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
-    Some(Path::new(&home).join("Library").join("Logs").join(identifier))
+    Some(
+        Path::new(&home)
+            .join("Library")
+            .join("Logs")
+            .join(identifier),
+    )
 }
 
 /// Set the directory up for a fresh session. Best-effort throughout: a log we
@@ -158,11 +163,8 @@ mod tests {
     /// Per-case directory: the suite runs threaded, and two cases sharing one
     /// path would rotate each other's files.
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "platter-log-test-{}-{}",
-            name,
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("platter-log-test-{}-{}", name, std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -241,7 +243,10 @@ mod tests {
     #[test]
     fn tilde_shortens_only_a_real_home_prefix() {
         let home = Some("/Users/ada");
-        assert_eq!(tilde("/Users/ada/Library/Logs/x.log", home), "~/Library/Logs/x.log");
+        assert_eq!(
+            tilde("/Users/ada/Library/Logs/x.log", home),
+            "~/Library/Logs/x.log"
+        );
         assert_eq!(tilde("/Users/ada", home), "~");
         // A longer username starting with the same letters is a different user.
         assert_eq!(tilde("/Users/adalovelace/x", home), "/Users/adalovelace/x");
