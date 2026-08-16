@@ -129,8 +129,17 @@ jobs:
           curl -fsSL "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" -o ffmpeg.tar.xz
           tar xf ffmpeg.tar.xz
           cd "ffmpeg-${FFMPEG_VERSION}"
+          # lame ships no pkg-config file, so ffmpeg probes for it by compiling
+          # against the default search paths — which on macOS do not include
+          # Homebrew's prefix. Without these, configure fails on
+          # `libmp3lame >= 3.98.3 not found` with lame sitting right there.
+          # Scoped to lame's own prefix rather than all of Homebrew: this build
+          # is meant to link exactly what it declares.
+          lame_prefix="$(brew --prefix lame)"
           ./configure \
             --prefix="$FFMPEG_PREFIX" \
+            --extra-cflags="-I${lame_prefix}/include" \
+            --extra-ldflags="-L${lame_prefix}/lib" \
             --enable-shared --disable-static \
             --disable-gpl --disable-nonfree \
             --disable-doc --disable-ffplay \
