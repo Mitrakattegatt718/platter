@@ -50,6 +50,18 @@ const MAX_LOG_LINES = 2000;
 
 const CBR_CHOICES = [128, 160, 192, 256, 320];
 
+/** One grid definition for the queue's heading and its rows, so the two cannot
+ * drift apart — the same arrangement the track list uses for the same reason.
+ * The last column is the remove button, which has no heading. */
+const QUEUE_COLUMNS =
+  "grid grid-cols-[minmax(0,1fr)_92px_78px_74px_62px_24px] items-center gap-2 px-3";
+
+/** Exact rendered heights, in px. Measured, not guessed: py-1.5 (12) + a 16px
+ * line + a 1px bottom border, and a second pinned 16px line when the row is
+ * blocked. `SourcesVirtualized` sizes itself from these. */
+const ROW_H = 29;
+const BLOCKED_ROW_H = 45;
+
 function defaultRate(format: TargetFormat): Rate {
   if (format === "aac") return { cbr: 256 };
   if (format === "mp3") return { cbr: 320 };
@@ -689,12 +701,25 @@ function SourcesVirtualized({
  * rebuilt this placeholder. */
 const QUEUED: ConvertItemUpdate = { id: 0, status: "queued", detail: null };
 
+/** Tones carry the outcome, not just the word.
+ *
+ * The two terminal successes are green — the same green in both, since "the
+ * file is written" and "the file is on the device" are the same kind of answer
+ * and only differ by destination. Failure keeps destructive, the skipped rows
+ * elsewhere keep amber, and everything still in motion or waiting stays
+ * neutral: colour that appears while a job runs would compete with the rows
+ * that have actually finished.
+ *
+ * Emerald rather than a token: this palette has no semantic `success`, and the
+ * amber used for blocked rows is spelled the same literal way. */
+const DONE_TONE = "text-emerald-600 dark:text-emerald-500";
+
 const STATUS_COPY: Record<ConvertItemStatus, { text: string; tone: string }> = {
   queued: { text: "Waiting", tone: "text-muted-foreground" },
   converting: { text: "Converting", tone: "text-foreground" },
-  converted: { text: "Converted", tone: "text-muted-foreground" },
+  converted: { text: "Converted", tone: DONE_TONE },
   importing: { text: "Copying", tone: "text-foreground" },
-  imported: { text: "On iPod", tone: "text-muted-foreground" },
+  imported: { text: "On iPod", tone: DONE_TONE },
   failed: { text: "Failed", tone: "text-destructive" },
   cancelled: { text: "Cancelled", tone: "text-muted-foreground" },
 };
@@ -735,17 +760,18 @@ const SourceRowView = memo(function SourceRowView({
   const copy = status && !skipped ? STATUS_COPY[status.status] : null;
   return (
     <div
-      className={cn(
-        "grid grid-cols-[minmax(0,1fr)_92px_78px_74px_62px_24px] items-center gap-2 border-b px-3 py-1.5 text-xs",
-        row.blocked && "opacity-60",
-      )}
+      className={cn(QUEUE_COLUMNS, "border-b py-1.5 text-xs", row.blocked && "opacity-60")}
     >
       <div className="flex min-w-0 flex-col">
         <span className="truncate" title={row.srcPath}>
           {row.display}
         </span>
         {row.blocked && (
-          <span className="flex items-center gap-1 truncate text-[10px] text-amber-600 dark:text-amber-500">
+          // `leading-4` is load-bearing: text-xs sets a *unitless* line-height,
+          // which this 10px child inherits as a ratio and renders at 13.33px.
+          // A fractional row height is one the virtualizer's exact sizes cannot
+          // state, so the second line is pinned to 16px like the first.
+          <span className="flex items-center gap-1 truncate text-[10px] leading-4 text-amber-600 dark:text-amber-500">
             <AlertTriangle className="size-2.5 shrink-0" />
             {row.blocked}
           </span>
@@ -974,12 +1000,30 @@ function ConvertFooter({
           )}
         </div>
 
+        {/* Both at `lg`, not just Convert. They share one slot and swap when a
+            job starts, so a smaller Cancel would resize the footer at the
+            moment the user is watching it — and Cancel is the one control that
+            must not move or shrink while a conversion is running. `px-6` on
+            top of the size: this is the action the whole tab exists for, and
+            at its natural width it read as the same weight as the log toggle
+            beside it. */}
         {running ? (
-          <Button variant="outline" size="sm" onClick={onCancel} disabled={finishing}>
+          <Button
+            variant="outline"
+            size="lg"
+            className="px-6"
+            onClick={onCancel}
+            disabled={finishing}
+          >
             Cancel
           </Button>
         ) : (
-          <Button size="sm" onClick={onStart} disabled={blockedReason !== null}>
+          <Button
+            size="lg"
+            className="px-6"
+            onClick={onStart}
+            disabled={blockedReason !== null}
+          >
             Convert{fileCount > 0 ? ` ${fileCount}` : ""}
           </Button>
         )}
