@@ -5,9 +5,13 @@ on:
     branches: [master, main]
   pull_request:
 
+# Superseded pull request pushes are worth cancelling; superseded main pushes
+# are not. Two merges landing back to back would otherwise leave the first
+# merge commit with no CI verdict at all, and that commit is the one a bisect
+# lands on later.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Everything that needs neither libgpod nor a Rust compile. This is the job
