@@ -34,7 +34,10 @@ import { SettingsDialog } from "@/components/SettingsDialog";
 import { PermissionBanner, PermissionPrimer } from "@/components/PermissionPrimer";
 import { ProgressBanner } from "@/components/ProgressBanner";
 import { ViewTabs } from "@/components/ViewTabs";
-import { recordActivity } from "@/lib/activity";
+// Paired with the commented-out heatmap in StatsView: with no reader, the
+// per-connect log is a full pass over the track list writing a calendar
+// nothing draws. Kept, not deleted — see the note in StatsView.
+// import { recordActivity } from "@/lib/activity";
 import { Toaster } from "@/components/Toaster";
 import { TrackEditPanel } from "@/components/TrackEditPanel";
 import { TrackList } from "@/components/TrackList";
@@ -212,11 +215,11 @@ export default function App() {
   // snapshot: play counts only ever change when a device connects (libgpod
   // merges Play Counts during itdb_parse), so re-scanning every track and
   // re-writing localStorage after each metadata edit was pure overhead.
-  useEffect(() => {
-    if (snapshot.mountPoint) {
-      recordActivity(snapshotRef.current.tracks, snapshot.mountPoint);
-    }
-  }, [snapshot.mountPoint]);
+  // useEffect(() => {
+  //   if (snapshot.mountPoint) {
+  //     recordActivity(snapshotRef.current.tracks, snapshot.mountPoint);
+  //   }
+  // }, [snapshot.mountPoint]);
 
   // The window starts hidden (tauri.conf.json) so launch never flashes an
   // unpainted white surface; show it once React has committed a frame.

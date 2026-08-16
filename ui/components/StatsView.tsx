@@ -1,10 +1,16 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { BarChart3, Check, ChevronDown, Share } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ActivityHeatmap } from "@/components/ActivityHeatmap";
+// Listening activity is off. The calendar can only be seeded from each
+// track's last-played date, and the device reports time_played = 0 for every
+// track we have seen, so the heatmap rendered a blank year with "0 plays" over
+// a library with thousands of them. Component, store and wiring are all kept —
+// uncomment this block, the memo, the prop and the render below to bring it
+// back once there is a real timestamp to seed from.
+// import { ActivityHeatmap } from "@/components/ActivityHeatmap";
 import { ArtworkThumb } from "@/components/ArtworkThumb";
 import { Treemap } from "@/components/Treemap";
-import { readActivity } from "@/lib/activity";
+// import { readActivity } from "@/lib/activity";
 import {
   artworkFetchSize,
   cachedArtwork,
@@ -36,10 +42,10 @@ function StatsViewImpl({
   const covers = useMemo(() => coverTrackIds(stats, 40), [stats]);
   // Keyed on tracks too: a snapshot landing while Stats is open (e.g. a sync
   // finishing) should repaint the calendar without a view switch.
-  const activity = useMemo(
-    () => (mountPoint ? readActivity(mountPoint) : {}),
-    [mountPoint, tracks],
-  );
+  // const activity = useMemo(
+  //   () => (mountPoint ? readActivity(mountPoint) : {}),
+  //   [mountPoint, tracks],
+  // );
 
   if (mountPoint === null) {
     return (
@@ -61,7 +67,7 @@ function StatsViewImpl({
     <StatsBody
       stats={stats}
       covers={covers}
-      activity={activity}
+      // activity={activity}
       deviceName={`iPod (${mountPoint})`}
     />
   );
@@ -74,12 +80,12 @@ export const StatsView = memo(StatsViewImpl);
 function StatsBody({
   stats,
   covers,
-  activity,
+  // activity,
   deviceName,
 }: {
   stats: ListeningStats;
   covers: string[];
-  activity: Record<string, number>;
+  // activity: Record<string, number>;
   deviceName: string;
 }) {
   const [copied, setCopied] = useState<null | boolean>(null);
@@ -167,7 +173,7 @@ function StatsBody({
 
         {/* Artists lead by time, not rank: the calendar shows when the
             listening happened. topArtists stays computed for the share card. */}
-        <ActivityHeatmap data={activity} />
+        {/* <ActivityHeatmap data={activity} /> */}
 
         <Treemap title="Top Albums" items={stats.topAlbums} />
         <Ranking title="Top Tracks" items={stats.topTracks} showArt collapseAfter={10} />
