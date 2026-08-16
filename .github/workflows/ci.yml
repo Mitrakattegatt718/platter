@@ -47,12 +47,8 @@ jobs:
   # few minutes, so the result is cached on the libgpod version and the job only
   # pays that cost when the cache misses.
   #
-  # Left non-blocking until it has gone green once on a real runner: everything
-  # below the checkout is unverified, because this repo has no remote yet and CI
-  # has therefore never run.
   rust:
     runs-on: macos-14
-    continue-on-error: true
     env:
       LIBGPOD_VERSION: "0.8.3"
       LIBGPOD_SHA256: "638a7959d04e95f1e62abad02bd33702e4e8dfef98485ac7d9d50395c37e955d"

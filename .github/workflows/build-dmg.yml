@@ -9,9 +9,6 @@
 # ship under this repo's LICENSE), and every dependency is floored at the
 # minimumSystemVersion tauri.conf.json declares. bundle-dylibs.sh fails the
 # build if any shipped Mach-O disagrees with either.
-#
-# NOTE: unverified until it has run on a real runner — this repo had no remote
-# until now, so CI has never executed.
 name: Build DMG
 
 on:
