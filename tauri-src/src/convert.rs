@@ -1137,6 +1137,24 @@ fn muxer_args(format: TargetFormat) -> Vec<String> {
 /// writes a status block roughly twice a second, so reading only stderr blocks
 /// the child the moment stdout's 64 KiB buffer fills — that is a certainty on
 /// any file longer than a few minutes, not a rare race.
+/// Lines ffmpeg emits that say nothing about the job, and that this app causes
+/// itself.
+///
+/// The only one so far: the mov muxer sniffs the output filename and warns when
+/// `-f ipod` is writing to something that is not `.m4a`/`.m4v`. Every ALAC and
+/// AAC file here trips it, because the encode goes to `Track.m4a.part` and is
+/// renamed only once it is complete — the extension it objects to belongs to
+/// the half-written marker, and the finished file always carries the right one.
+/// The muxer is chosen by `-f`, not by the name, so the container is correct
+/// either way.
+///
+/// One meaningless line per file, in a pane that exists to be read, trains the
+/// user to ignore the pane. Dropped here rather than at `-v error`, which would
+/// also silence the warnings that do mean something.
+fn is_self_inflicted_noise(line: &str) -> bool {
+    line.contains("extension is not .m4a nor .m4v")
+}
+
 fn run_ffmpeg(
     mut cmd: Command,
     control: &ConvertControl,
@@ -1165,7 +1183,7 @@ fn run_ffmpeg(
             s.spawn(|| {
                 for line in BufReader::new(err).lines().map_while(Result::ok) {
                     let line = line.trim().to_string();
-                    if line.is_empty() {
+                    if line.is_empty() || is_self_inflicted_noise(&line) {
                         continue;
                     }
                     let level = if line.contains("Error")
@@ -1825,6 +1843,29 @@ mod tests {
     /// track is unplayable with no error anywhere in the chain. Asserting the
     /// command merely exited 0 would not catch it — the codec and the
     /// extension both have to be checked.
+    #[test]
+    fn the_ipod_muxers_extension_warning_is_dropped() {
+        // The literal ffmpeg emits, with the muxer tag it carries.
+        assert!(is_self_inflicted_noise(
+            "[ipod @ 0xb42c28280] Warning, extension is not .m4a nor .m4v Quicktime/Ipod might not play the file"
+        ));
+    }
+
+    #[test]
+    fn real_warnings_survive_the_filter() {
+        // Nothing here is caused by the .part name, so all of it has to reach
+        // the log — the filter exists to remove one false positive, not to make
+        // the pane quiet.
+        for line in [
+            "[flac @ 0x7f8] Could not find codec parameters",
+            "Error while decoding stream #0:0: Invalid data found when processing input",
+            "[ipod @ 0x600] Encoder did not produce proper pts, making some up.",
+            "Past duration 0.999992 too large",
+        ] {
+            assert!(!is_self_inflicted_noise(line), "{line}");
+        }
+    }
+
     #[test]
     fn every_target_writes_its_own_codec_and_extension() {
         let Some(tools) = tools() else {
