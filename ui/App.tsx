@@ -28,6 +28,7 @@ import { ImportDialog } from "@/components/ImportDialog";
 import { DisconnectedView } from "@/components/DisconnectedView";
 import { DriveSelect } from "@/components/DriveSelect";
 import { DrivePickerDialog } from "@/components/DrivePickerDialog";
+import { EjectIcon } from "@/components/EjectIcon";
 import { MountPickerDialog } from "@/components/MountPickerDialog";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { PermissionBanner, PermissionPrimer } from "@/components/PermissionPrimer";
@@ -609,6 +610,27 @@ export default function App() {
             onEject={eject}
             onConnectManually={() => setShowMountPicker(true)}
           />
+          {/* Eject sits against the device picker, before the gauge. It acts
+              on the device the picker names, and the gauge is a readout of
+              that same device — putting the control between its subject and a
+              number keeps the pair "what is connected / what you can do to it"
+              adjacent, and leaves the gauge free to grow as "42.1 GB free"
+              without pushing the button around. It is otherwise reachable only
+              inside the drive menu, and only under the pointer at that; a
+              standing button is what makes "unplug this safely" findable
+              without opening a menu to look for it. */}
+          {isOpen && (
+            <Button
+              variant="ghost"
+              size="icon-lg"
+              disabled={busy}
+              aria-label="Eject"
+              title="Disconnect and eject the iPod so you can safely unplug it"
+              onClick={eject}
+            >
+              <EjectIcon className="size-4.5" />
+            </Button>
+          )}
           {isOpen && <CapacityGauge capacity={snapshot.capacity} />}
         </div>
 

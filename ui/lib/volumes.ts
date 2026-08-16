@@ -89,9 +89,21 @@ export function volumeSubtitle(volume: VolumeInfo): string {
   return extra === null ? `iPod ${name}` : `iPod ${name} · ${extra}`;
 }
 
-/** Free against total, for the right-hand column of a drive row. Empty — not
- * "0 B" — when statfs failed: no free space and "couldn't ask" must never look
- * the same, since one blocks an import and the other means we don't know. */
+/** Just the free half, for the drive menu's right-hand column.
+ *
+ * Free space is the only number that decides anything in a picker — whether the
+ * next import fits — and it is the shorter of the two strings by half. The
+ * total is still one hover away in the row's tooltip, which is where the fact
+ * that separates a 160 GB Classic from a 30 GB one belongs.
+ *
+ * Empty, like `volumeCapacity`, when statfs could not answer. */
+export function volumeFree(volume: VolumeInfo): string {
+  return volume.freeBytes === null ? "" : `${formatBytes(volume.freeBytes)} free`;
+}
+
+/** Free against total, for a drive row's tooltip. Empty — not "0 B" — when
+ * statfs failed: no free space and "couldn't ask" must never look the same,
+ * since one blocks an import and the other means we don't know. */
 export function volumeCapacity(volume: VolumeInfo): string {
   const { freeBytes, totalBytes } = volume;
   if (freeBytes !== null && totalBytes !== null) {

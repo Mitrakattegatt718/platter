@@ -3,6 +3,7 @@ import {
   partitionVolumes,
   sameVolumes,
   volumeCapacity,
+  volumeFree,
   volumeLabel,
   volumeSubtitle,
 } from "./volumes";
@@ -180,6 +181,29 @@ describe("volumeCapacity", () => {
     // Empty, not "0 B": zero free space and "couldn't ask" must never look
     // the same — one blocks an import, the other means we don't know.
     expect(volumeCapacity(volume({ path: "/p" }))).toBe("");
+  });
+});
+
+describe("volumeFree", () => {
+  it("drops the total the row does not need", () => {
+    expect(
+      volumeFree(volume({ path: "/p", freeBytes: 42_000_000_000, totalBytes: 160_000_000_000 })),
+    ).toBe("42.0 GB free");
+  });
+
+  it("ignores a total with no free figure beside it", () => {
+    // volumeCapacity falls back to printing the total on its own. This one
+    // must not: "160 GB" in a column headed by free space would read as
+    // 160 GB free.
+    expect(volumeFree(volume({ path: "/p", totalBytes: 160_000_000_000 }))).toBe("");
+  });
+
+  it("says nothing when statfs failed", () => {
+    expect(volumeFree(volume({ path: "/p" }))).toBe("");
+  });
+
+  it("distinguishes a full drive from an unmeasurable one", () => {
+    expect(volumeFree(volume({ path: "/p", freeBytes: 0 }))).toBe("0 B free");
   });
 });
 
