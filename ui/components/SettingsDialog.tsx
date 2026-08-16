@@ -107,7 +107,9 @@ export function SettingsDialog({
               </DialogDescription>
             </div>
 
-            {/* The macOS segmented-control idiom, matching ViewTabs. */}
+            {/* The macOS segmented-control idiom, as ViewTabs uses it — at
+                dialog scale rather than the header's, where the tabs are the
+                primary navigation and this is one setting among several. */}
             <div
               role="radiogroup"
               aria-label="Appearance"

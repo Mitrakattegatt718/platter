@@ -22,7 +22,13 @@ export function ViewTabs({
   convertProgress: number | null;
 }) {
   return (
-    <div role="tablist" aria-label="View" className="flex items-center rounded-md bg-muted/60 p-0.5">
+    // 36px overall in a 52px header: the segments carry the primary
+    // navigation, and at the old 28px they read as a secondary control next to
+    // the device name beside them. The track keeps its 2px padding — that
+    // hairline is what makes it a segmented control rather than three buttons
+    // in a box — so the radii step with it: 8px outside, 6px in, which is the
+    // 2px offset that keeps the corners concentric.
+    <div role="tablist" aria-label="View" className="flex items-center rounded-lg bg-muted/60 p-0.5">
       {(Object.keys(LABELS) as AppView[]).map((v) => (
         <button
           key={v}
@@ -31,7 +37,7 @@ export function ViewTabs({
           aria-selected={view === v}
           onClick={() => onChange(v)}
           className={cn(
-            "flex items-center gap-1.5 rounded-[5px] px-2.5 py-1 text-xs font-medium transition-colors",
+            "flex items-center gap-1.5 rounded-md px-3.5 py-1.5 text-sm font-medium transition-colors",
             view === v
               ? "bg-background text-foreground shadow-sm"
               : "text-muted-foreground hover:text-foreground",

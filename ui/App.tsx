@@ -567,7 +567,10 @@ export default function App() {
     const startWidth = detailRef.current?.offsetWidth ?? detailWidth;
     let latest = startWidth;
     const onMove = (ev: MouseEvent) => {
-      latest = Math.min(720, Math.max(400, startWidth + (startX - ev.clientX)));
+      // Floor matches Convert's fixed 320: that panel carries a form of the
+      // same shape at that width, so it is demonstrably usable, and anything
+      // wider would stop the two tabs being made to line up.
+      latest = Math.min(720, Math.max(320, startWidth + (startX - ev.clientX)));
       if (detailRef.current) detailRef.current.style.width = `${latest}px`;
     };
     const onUp = () => {
@@ -601,7 +604,7 @@ export default function App() {
           Three grid columns, not a flex row with a spacer: the left zone's
           width moves (volume name, and "42 GB free" after every import) and a
           flex layout would walk the centered tabs sideways as it did. */}
-      <header className="grid h-13 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b px-4">
+      <header className="grid h-14 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b px-4">
         <div className="flex min-w-0 items-center gap-1">
           <DriveSelect
             mountPoint={snapshot.mountPoint}
@@ -639,12 +642,12 @@ export default function App() {
         <div className="flex items-center justify-end gap-1">
           <Button
             variant="ghost"
-            size="sm"
+            size="icon-lg"
             aria-label="Settings"
             title="App settings (⌘,)"
             onClick={() => setShowSettings(true)}
           >
-            <Settings />
+            <Settings className="size-4.5" />
           </Button>
         </div>
       </header>
@@ -683,10 +686,20 @@ export default function App() {
               />
             </div>
 
+            {/* One pixel in flow, eight to aim at. Convert's panel is divided
+                from its queue by a plain `border-l`, and a 4px grey bar next
+                to it read as a different kind of seam — a piece of furniture
+                rather than an edge. The hit area is a transparent child, so it
+                can overhang both neighbours without costing the row any width,
+                and hovering it still lights the rule because :hover applies to
+                the ancestor too. `z-10` because the pane is a later sibling
+                and would otherwise paint over the half that overhangs it. */}
             <div
-              className="w-1 shrink-0 cursor-col-resize bg-border transition-colors hover:bg-primary/40"
+              className="relative z-10 w-px shrink-0 bg-border transition-colors hover:bg-primary/40"
               onMouseDown={startResize}
-            />
+            >
+              <div className="absolute inset-y-0 -left-1 -right-1 cursor-col-resize" />
+            </div>
 
             <div
               ref={detailRef}
