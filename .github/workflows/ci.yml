@@ -81,6 +81,13 @@ jobs:
           echo "${LIBGPOD_SHA256}  libgpod.tar.bz2" | shasum -a 256 --check --status
           tar xf libgpod.tar.bz2
           cd "libgpod-${LIBGPOD_VERSION}"
+          # See build-dmg.yml: Homebrew's perl has no XML::Parser, macOS's does.
+          if /usr/bin/perl -e 'require XML::Parser' 2>/dev/null; then
+            export INTLTOOL_PERL=/usr/bin/perl
+          else
+            brew install cpanminus
+            sudo cpanm --notest XML::Parser
+          fi
           ./configure --prefix="$LIBGPOD_PREFIX" \
             --disable-udev --disable-gtk-doc --without-hal --disable-pygobject --disable-mono
           make -j"$(sysctl -n hw.ncpu)"

@@ -81,6 +81,17 @@ jobs:
           echo "${LIBGPOD_SHA256}  libgpod.tar.bz2" | shasum -a 256 --check --status
           tar xf libgpod.tar.bz2
           cd "libgpod-${LIBGPOD_VERSION}"
+          # intltool's configure macro shells out to the first perl on PATH,
+          # which on a runner is Homebrew's — pulled in by gettext, and without
+          # XML::Parser. macOS ships that module with its own perl, so point
+          # intltool at that one rather than compiling a CPAN module the build
+          # needs for nothing but a configure check.
+          if /usr/bin/perl -e 'require XML::Parser' 2>/dev/null; then
+            export INTLTOOL_PERL=/usr/bin/perl
+          else
+            brew install cpanminus
+            sudo cpanm --notest XML::Parser
+          fi
           ./configure --prefix="$LIBGPOD_PREFIX" \
             --disable-udev --disable-gtk-doc --without-hal --disable-pygobject --disable-mono
           make -j"$(sysctl -n hw.ncpu)"
