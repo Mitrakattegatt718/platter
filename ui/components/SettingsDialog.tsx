@@ -150,7 +150,14 @@ export function SettingsDialog({
               </DialogDescription>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+            {/* One row, however many icons there are — the tiles are a set of
+                colourways of one image, and a row reads as that set where a
+                block of rows reads as a catalogue. `flex-1` rather than a
+                fixed column count so a fourth alternate widens the row's share
+                instead of starting a second line; the window's 900px minimum
+                keeps the dialog at its full 420 and the tiles above the 64px
+                the preview needs. */}
+            <div className="flex gap-2">
               {icons.map((icon) => {
                 const isSelected = icon.id === selected;
                 return (
@@ -160,7 +167,7 @@ export function SettingsDialog({
                     aria-pressed={isSelected}
                     onClick={() => void choose(icon.id)}
                     className={cn(
-                      "relative flex flex-col items-center gap-1.5 rounded-md border p-2 transition-colors",
+                      "relative flex flex-1 flex-col items-center gap-1.5 rounded-md border p-2 transition-colors",
                       isSelected
                         ? "border-primary bg-accent"
                         : "border-transparent hover:bg-accent/50",
