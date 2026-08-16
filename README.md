@@ -106,11 +106,11 @@ An iPod's database has no undo, so Platter is conservative by design:
 
 ## Installation
 
-There is no public release yet — tagged releases build a self-contained,
-notarizable DMG in CI (`.github/workflows/release.yml`). Until the first one
-ships, [build from source](#build-from-source).
-
-Once a DMG exists:
+Grab the DMG from the [latest release](https://github.com/kolebayev/platter/releases/latest).
+Between releases, every push to `main` leaves a build under **Artifacts** on
+its [CI run](https://github.com/kolebayev/platter/actions/workflows/ci.yml) —
+same recipe, downloadable with a GitHub account. Or
+[build from source](#build-from-source).
 
 1. Open the `.dmg` and drag Platter to Applications
 2. Open Platter and connect your iPod
@@ -118,7 +118,7 @@ Once a DMG exists:
    **Privacy & Security → Files & Folders → Removable Volumes**, then relaunch
 
 > [!TIP]
-> If a build is ad-hoc signed (no Developer ID), macOS reports it as
+> Builds are ad-hoc signed (no Developer ID), so macOS reports them as
 > "damaged". Clear the quarantine flag once:
 > `xattr -dr com.apple.quarantine /Applications/Platter.app`
 

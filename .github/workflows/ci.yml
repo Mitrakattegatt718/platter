@@ -92,3 +92,18 @@ jobs:
 
       - name: Test
         run: cargo test --manifest-path tauri-src/Cargo.toml
+
+  # A DMG off every push to main, downloadable from the run's Artifacts. It is
+  # the same workflow a tagged release runs, so what a tester installs between
+  # releases is built the way the release will be — LGPL ffmpeg included, since
+  # a build handed to someone else is a build that ships.
+  #
+  # Not on pull requests: it is 20 minutes of runner time whose only consumer
+  # is a person asking for a copy, and the tag path covers the rest. Gated on
+  # the fast job so a failing typecheck costs seconds rather than that.
+  dmg:
+    if: github.event_name == 'push'
+    needs: frontend
+    uses: ./.github/workflows/build-dmg.yml
+    with:
+      artifact-name: platter-dmg-${{ github.sha }}

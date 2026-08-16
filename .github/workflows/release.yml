@@ -1,110 +1,70 @@
-# Builds the self-contained, LGPL-clean DMG on a tagged release. This is the
-# only build that may be distributed: it uses the LGPL ffmpeg configuration
-# (never Homebrew's GPL build) and every dependency is compiled for the
-# minimumSystemVersion tauri.conf.json declares — bundle-dylibs.sh fails the
-# build if any shipped Mach-O disagrees.
-#
-# NOTE: like ci.yml's rust job, unverified until it has run on a real runner.
-# The DMG it uploads is ad-hoc signed unless the SIGN_IDENTITY secret is set —
-# see bundle-dylibs.sh for the notarization steps a public release still needs.
+# Publishes the DMG for a tagged version. The build itself lives in
+# build-dmg.yml, which ci.yml calls too — a release is that same build with
+# the artifact attached to a GitHub Release instead of an Actions run.
 name: Release
 
 on:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: write
+
 jobs:
-  dmg:
-    runs-on: macos-14
-    env:
-      LIBGPOD_VERSION: "0.8.3"
-      FFMPEG_VERSION: "7.1.1"
-      LIBGPOD_PREFIX: ${{ github.workspace }}/.libgpod
-      FFMPEG_PREFIX: ${{ github.workspace }}/.ffmpeg-lgpl
-      # Every compiled artifact — libgpod, ffmpeg, the Rust binary — floors at
-      # the OS the bundle claims to support. Homebrew bottles on a macos-14
-      # runner already target 14.0.
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
+  # The tag is what users cite in a bug report; tauri.conf.json's version is
+  # what the app shows in its header and what names the DMG. A release where
+  # the two disagree is unfixable after the fact, so it is refused before the
+  # 20-minute build rather than after it.
+  verify-version:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: tauri-src
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install build dependencies
-        run: |
-          brew install glib gdk-pixbuf libplist sqlite pkg-config \
-            autoconf automake libtool gettext intltool dylibbundler lame
-
-      - name: Cache libgpod
-        id: libgpod-cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.LIBGPOD_PREFIX }}
-          key: libgpod-${{ env.LIBGPOD_VERSION }}-${{ runner.os }}-${{ runner.arch }}-min14
-
-      - name: Build libgpod from source
-        if: steps.libgpod-cache.outputs.cache-hit != 'true'
+      - name: Tag matches tauri.conf.json
         run: |
           set -euo pipefail
-          curl -fsSL "https://sourceforge.net/projects/gtkpod/files/libgpod/libgpod-${LIBGPOD_VERSION}/libgpod-${LIBGPOD_VERSION}.tar.bz2/download" -o libgpod.tar.bz2
-          tar xf libgpod.tar.bz2
-          cd "libgpod-${LIBGPOD_VERSION}"
-          ./configure --prefix="$LIBGPOD_PREFIX" \
-            --disable-udev --disable-gtk-doc --without-hal --disable-pygobject --disable-mono
-          make -j"$(sysctl -n hw.ncpu)"
-          make install
+          tag="${GITHUB_REF_NAME#v}"
+          conf=$(node -p "require('./tauri-src/tauri.conf.json').version")
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$conf" ] || [ "$tag" != "$pkg" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, tauri.conf.json $conf, package.json $pkg — bump both before tagging"
+            exit 1
+          fi
 
-      - name: Cache LGPL ffmpeg
-        id: ffmpeg-cache
-        uses: actions/cache@v4
+  build:
+    needs: verify-version
+    uses: ./.github/workflows/build-dmg.yml
+    with:
+      artifact-name: platter-dmg-${{ github.ref_name }}
+      # A shipped release outlives its Actions run; the attached DMG is the
+      # copy that matters, this one is only the hand-off between jobs.
+      retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          path: ${{ env.FFMPEG_PREFIX }}
-          key: ffmpeg-lgpl-${{ env.FFMPEG_VERSION }}-${{ runner.os }}-${{ runner.arch }}-min14
+          name: platter-dmg-${{ github.ref_name }}
+          path: dist
 
-      - name: Build LGPL ffmpeg from source
-        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
-        # The canonical LGPL configure line — no GPL
-        # components, exactly the codecs/muxers the convert pipeline uses.
-        run: |
-          set -euo pipefail
-          curl -fsSL "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" -o ffmpeg.tar.xz
-          tar xf ffmpeg.tar.xz
-          cd "ffmpeg-${FFMPEG_VERSION}"
-          ./configure \
-            --prefix="$FFMPEG_PREFIX" \
-            --enable-shared --disable-static \
-            --disable-gpl --disable-nonfree \
-            --disable-doc --disable-ffplay \
-            --disable-network --disable-protocols --enable-protocol=file,pipe \
-            --disable-encoders --disable-decoders --disable-muxers --disable-demuxers \
-            --disable-filters --disable-bsfs --disable-parsers \
-            --enable-encoder=alac,aac,flac,pcm_s16le,pcm_s16be,mjpeg \
-            --enable-decoder=alac,aac,flac,mp3,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s32le,pcm_f32le,ape,tta,wavpack,shorten,dsd_lsbf,dsd_msbf,dsd_lsbf_planar,dsd_msbf_planar,mlp,truehd,wmalossless,mjpeg,png \
-            --enable-muxer=ipod,mp4,mp3,aiff,wav,flac,image2 \
-            --enable-demuxer=mov,mp3,flac,wav,aiff,ape,tta,wv,dsf,dff,caf,w64,image2,mjpeg \
-            --enable-parser=aac,flac,mpegaudio,png,mjpeg \
-            --enable-filter=aresample,aformat,anull,lowpass,scale,null \
-            --enable-libmp3lame \
-            --enable-audiotoolbox \
-            --enable-videotoolbox
-          make -j"$(sysctl -n hw.ncpu)"
-          make install
-
-      - name: Stage ffmpeg sidecars
-        run: ./scripts/stage-ffmpeg.sh "$FFMPEG_PREFIX/bin"
-
-      - name: Build and bundle
-        run: |
-          npm ci
-          npm run bundle
-
-      - name: Upload DMG to the release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
-          files: tauri-src/target/release/bundle/dmg/Platter_*.dmg
+          files: dist/*.dmg
+          draft: true
+          # Drafted, not published: the DMG is unsigned beyond ad-hoc, and the
+          # quarantine instructions below are the first thing a downloader
+          # needs. A draft gives you the chance to read them on the page they
+          # will appear on before anyone can download the build.
+          body: |
+            Requires macOS 14 or newer on Apple Silicon.
+
+            **This build is ad-hoc signed**, so macOS reports it as damaged on
+            first launch. Install it, then clear the quarantine flag once:
+
+            ```sh
+            xattr -dr com.apple.quarantine /Applications/Platter.app
+            ```
+
+            Connect the iPod, then enable Platter under **Privacy & Security →
+            Files & Folders → Removable Volumes** and relaunch.
