@@ -1,9 +1,12 @@
 # Icon sources
 
 The four renders every other icon in the repo is derived from. Everything in
-`../` (`icon.icns`, `icon.png`, `32x32.png`, `Square*Logo.png`) and everything
-in `../alt/` is generated — edit these four and re-run
-`scripts/regenerate-icons.sh` from the repo root, never the outputs.
+`../` (`icon.icns`, `icon.png`, `icon-preview.png`, `32x32.png`, `128x128.png`,
+`128x128@2x.png`) and everything in `../alt/` is generated — edit these four and
+re-run `scripts/regenerate-icons.sh` from the repo root, never the outputs.
+
+`tauri icon` also emits iOS, Android and Windows sets. This app is macOS only,
+so the script deletes them; that list is the whole macOS set.
 
 | file          | role                                                           |
 | ------------- | -------------------------------------------------------------- |
@@ -44,8 +47,32 @@ pixels of 1024×1024) but differ byte-for-byte. So `regenerate-icons.sh` dirties
 `icon.icns` in git every time, with nothing visual behind it. Check out the old
 file rather than committing the churn unless the art actually changed.
 
+## Full-bleed sources, inset outputs
+
+The renders in here reach the canvas edge with no margin, and two different
+consumers want two different things from that:
+
+- **The bundle icon** (`icon.icns`, and the macOS 26 Icon Composer asset
+  `tauri build` derives from `icon.png`) wants it full-bleed. The Dock feeds
+  that through the system icon pipeline, which masks the art and fits it to
+  Apple's icon grid — an 824px body on a 1024px canvas. macOS supplies the
+  margin, so shipping art that already had one would inset it twice.
+- **Anything AppKit draws itself** — the `../alt/` set, applied with
+  `setApplicationIconImage` — wants it inset. That call is a raw blit into the
+  Dock tile: no mask, no grid, no margin. A full-bleed image there renders about
+  20% wider than every neighbour, and wider than this app's own bundle icon, so
+  picking an alternate visibly resized the tile.
+
+`regenerate-icons.sh` therefore emits both, and the `ICON_GRID` variable at the
+top of it is the 824/1024 fraction. `icon-preview.png` is the inset copy of the
+default artwork; it exists only so the picker's "Default" tile matches the three
+alternates beside it, and is never applied as an image.
+
 ## Known limitations
 
-- The art is **full-bleed** — it reaches the canvas edge, while macOS system
-  icons carry roughly 10% transparent margin. It therefore reads slightly
-  larger than its neighbours in the Dock. Deliberate, not a bug.
+- The match is close, not exact. Measured against a neighbouring Dock tile at
+  2x, an inset alternate comes out about 5% wide — down from about 20% before
+  the inset existed, and no longer distinguishable from the bundle icon by eye.
+  Tune `ICON_GRID` in `regenerate-icons.sh` if that ever stops being true; the
+  bundle icon is not adjustable from here, since macOS fits it to the grid
+  itself.

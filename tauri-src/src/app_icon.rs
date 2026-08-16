@@ -25,8 +25,15 @@ use base64::Engine;
 
 /// The shipped set. Icons are compiled in rather than declared as bundle
 /// resources: `include_bytes!` sidesteps resource paths resolving differently
-/// under `tauri dev` and inside a packaged .app, and four 33 KB PNGs are noise
-/// next to the binary.
+/// under `tauri dev` and inside a packaged .app, and four 512x512 PNGs of
+/// ~150 KB are noise next to the binary.
+///
+/// These carry a transparent margin the renders in `icons/sources/` do not:
+/// `setApplicationIconImage` blits straight into the Dock tile, with none of
+/// the masking and grid-fitting the system icon pipeline applies to the
+/// bundle's own icns. Handed a full-bleed image it draws about 20% wider than
+/// every neighbour — see `scripts/regenerate-icons.sh`, which bakes the margin
+/// in.
 ///
 /// Adding one is a file in `icons/alt/` plus a line here. Ids are persisted in
 /// settings, so renaming one silently resets anyone who had it selected.
@@ -41,7 +48,12 @@ const ICONS: &[(&str, &str, &[u8])] = &[
 /// because it is never applied as an image: AppKit restores it when handed
 /// nil. The picker still needs something to draw on that tile, and serving it
 /// from the same response is what lets the UI map straight over the list.
-const DEFAULT_ICON: &[u8] = include_bytes!("../icons/icon.png");
+///
+/// This is `icon-preview.png`, not the `icon.png` the bundle is built from:
+/// that one has to stay full-bleed for the icns and Icon Composer asset, and
+/// drawing it beside three inset alternates would make the picker tiles
+/// disagree in size the way the Dock used to.
+const DEFAULT_ICON: &[u8] = include_bytes!("../icons/icon-preview.png");
 
 /// Label for the `None` entry. The other three are named for their artwork;
 /// this one is the app's own identity rather than a colourway, and it is the
