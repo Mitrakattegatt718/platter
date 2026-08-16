@@ -1,4 +1,4 @@
-import { CheckCircle2, LayoutGrid, Plus, Search, X } from "lucide-react";
+import { CheckCircle2, LayoutGrid, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -9,6 +9,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { AddMusicButton } from "@/components/AddMusicButton";
 import type { TrackGrouping, TrackSort } from "@/lib/types";
 import { GROUPING_LABELS, SORT_LABELS } from "@/lib/types";
 
@@ -64,6 +65,13 @@ export function LibraryHeaderRow({
         </>
       ) : (
         <>
+          {/* Add leads the row, ahead of search. It is the only thing here
+              that changes the library; search and View only change how it is
+              looked at, so a control that writes should not be filed after two
+              that read. No empty-library case to handle: the caller does not
+              render this row at all until there is music, and the list's
+              placeholder carries the one useful action until then. */}
+          <AddMusicButton onClick={onAdd} disabled={addDisabled} />
           <Search className="size-4 shrink-0 text-muted-foreground" />
           <input
             className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
@@ -79,15 +87,6 @@ export function LibraryHeaderRow({
               <X className="size-4" />
             </button>
           )}
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={addDisabled}
-            title="Import MP3/M4A directly, or convert FLAC, WAV and other lossless files to Apple Lossless — or drag files and folders onto the track list"
-            onClick={onAdd}
-          >
-            <Plus /> Add
-          </Button>
         </>
       )}
 

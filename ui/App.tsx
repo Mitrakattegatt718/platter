@@ -638,6 +638,7 @@ export default function App() {
             <div className="min-w-80 flex-1">
               <TrackList
                 rows={rows}
+                trackCount={snapshot.tracks.length}
                 searchValue={search}
                 searchQuery={deferredSearch}
                 onSearchChange={setSearch}

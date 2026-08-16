@@ -40,6 +40,10 @@ function TrackListImpl({
   onSortChange,
 }: {
   rows: ListRow[];
+  /** Tracks on the device, before grouping or the search filter. Distinguishes
+   * "this iPod is empty" from "nothing matched" — two empty lists that need
+   * opposite things said about them. */
+  trackCount: number;
   /** Live input value. */
   searchValue: string;
   /** Deferred value the visible rows were computed from — used for highlight

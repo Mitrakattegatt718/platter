@@ -15,6 +15,8 @@ import {
   Upload,
   X,
 } from "lucide-react";
+import { AddMusicButton } from "@/components/AddMusicButton";
+import { EmptyState } from "@/components/EmptyState";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
