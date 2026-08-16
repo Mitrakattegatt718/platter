@@ -92,6 +92,22 @@ jobs:
             brew install cpanminus
             sudo cpanm --notest XML::Parser
           fi
+          # libgpod 0.8.3 asks pkg-config for `libplist`; Homebrew ships
+          # libplist 2.x, whose module is named `libplist-2.0`. Only the name
+          # moved — the API libgpod uses is the same one, which is what the
+          # local dev build linking libplist-2.0.4.dylib demonstrates. A shim
+          # .pc that requires the real module closes the gap without patching
+          # the tarball, and keeps the version check honest by carrying the
+          # real version through.
+          shim="$PWD/.pc-shim"
+          mkdir -p "$shim"
+          {
+            echo "Name: libplist"
+            echo "Description: Maps libgpod's libplist requirement onto libplist-2.0"
+            echo "Version: $(pkg-config --modversion libplist-2.0)"
+            echo "Requires: libplist-2.0"
+          } > "$shim/libplist.pc"
+          export PKG_CONFIG_PATH="$shim:${PKG_CONFIG_PATH:-}"
           ./configure --prefix="$LIBGPOD_PREFIX" \
             --disable-udev --disable-gtk-doc --without-hal --disable-pygobject --disable-mono
           make -j"$(sysctl -n hw.ncpu)"

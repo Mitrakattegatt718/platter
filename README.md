@@ -128,7 +128,11 @@ same recipe, downloadable with a GitHub account. Or
 
 - Rust (rustup) and Node 20+
 - libgpod at `~/.local` (override with `LIBGPOD_PREFIX`) — not in Homebrew,
-  build it from source; GLib chain from Homebrew (override with `BREW_PREFIX`)
+  build it from source; GLib chain from Homebrew (override with `BREW_PREFIX`).
+  Its `configure` trips on two things a Mac with Homebrew has: it needs the
+  perl carrying `XML::Parser` (macOS's `/usr/bin/perl`, not Homebrew's), and it
+  asks pkg-config for `libplist` where Homebrew's module is `libplist-2.0`.
+  `.github/workflows/build-dmg.yml` carries the working incantation for both
 - `brew install dylibbundler` for self-contained bundles
 - ffmpeg/ffprobe staged as sidecars: `tauri-src/binaries/` is gitignored, so a
   fresh clone must run `./scripts/stage-ffmpeg.sh` before its first build or
