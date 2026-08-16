@@ -144,6 +144,7 @@ pub fn run() {
             commands::close_library,
             commands::eject_ipod,
             commands::open_privacy_settings,
+            commands::request_volume_access,
             commands::list_app_icons,
             commands::get_app_icon,
             commands::set_app_icon,

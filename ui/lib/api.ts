@@ -1,6 +1,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { describeError, log, summarizeArgs } from "./log";
 import type {
+  AccessRequest,
   AppIconInfo,
   ConvertEstimateResult,
   Destination,
@@ -63,6 +64,9 @@ export const api = {
   /** Counts importable audio on a volume without importing anything. */
   scanVolume: (path: string) => invoke<VolumeScan>("scan_volume", { path }),
   openPrivacySettings: () => invoke<void>("open_privacy_settings"),
+  /** Clears the recorded TCC answer and touches a volume so macOS raises its
+   * own consent modal. Resolves only once the user has answered that modal. */
+  requestVolumeAccess: () => invoke<AccessRequest>("request_volume_access"),
 
   listAppIcons: () => invoke<AppIconInfo[]>("list_app_icons"),
   getAppIcon: () => invoke<string | null>("get_app_icon"),

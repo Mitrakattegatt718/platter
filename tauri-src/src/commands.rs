@@ -269,6 +269,96 @@ pub async fn open_privacy_settings() -> Result<(), String> {
     Ok(())
 }
 
+/// What `request_volume_access` managed to do. `granted` is the only field
+/// that decides whether the iPod is reachable now; the rest exists so the
+/// dialog can explain a failure instead of repeating its first instruction.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessRequest {
+    pub granted: bool,
+    /// False when the binary isn't inside a .app. A dev build's TCC decision
+    /// belongs to the terminal that launched it, so neither the reset nor the
+    /// probe below can raise a prompt for Platter itself.
+    pub bundled: bool,
+    /// The volume that was probed; None when /Volumes held nothing to probe.
+    pub volume: Option<String>,
+}
+
+/// Picks what to touch. A volume that currently answers EPERM is the denial
+/// the user is staring at, so it wins; failing that, any non-boot volume will
+/// do, because the grant covers removable volumes as a class rather than one
+/// mount at a time. The boot volume is a symlink to `/` in here and is never
+/// gated, so probing it would prove nothing.
+fn volume_to_probe() -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = std::fs::read_dir("/Volumes")
+        .ok()?
+        .flatten()
+        .filter(|e| !e.file_type().is_ok_and(|t| t.is_symlink()))
+        .map(|e| e.path())
+        .collect();
+    candidates.sort();
+    candidates
+        .iter()
+        .find(|p| {
+            std::fs::read_dir(p)
+                .err()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+        })
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
+}
+
+/// Asks macOS itself for removable-volume access — the only way to get the
+/// native consent modal back once an answer is on file, since TCC records the
+/// first one and every later access just returns EPERM in silence. `tccutil`
+/// clears that record for this bundle id, and the directory read that follows
+/// is what makes tccd raise the modal. That read blocks until the user
+/// answers, which is why this has to stay off the tokio pool.
+#[tauri::command]
+pub async fn request_volume_access(app: AppHandle) -> Result<AccessRequest, String> {
+    let identifier = app.config().identifier.clone();
+    blocking(move || {
+        let bundled =
+            std::env::current_exe().is_ok_and(|p| p.to_string_lossy().contains("/Contents/MacOS/"));
+        // Read the candidate *before* the reset: the EPERM is what identifies
+        // the right volume, and the reset is what takes it away.
+        let volume = volume_to_probe();
+        // This one service, never `All`: a blanket reset terminates the app
+        // whose permissions it clears. A tccutil that won't run is not fatal —
+        // the probe still runs, and a still-denied read routes the UI back to
+        // the System Settings path.
+        #[cfg(target_os = "macos")]
+        if bundled {
+            match std::process::Command::new("tccutil")
+                .args(["reset", "SystemPolicyRemovableVolumes", identifier.as_str()])
+                .output()
+            {
+                Ok(o) if !o.status.success() => {
+                    log::warn!(
+                        "tccutil reset failed: {}",
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    );
+                }
+                Err(e) => log::warn!("couldn't run tccutil: {e}"),
+                _ => {}
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = identifier;
+        let granted = volume.as_ref().is_some_and(|p| {
+            // Count the entries rather than trust the handle: opening a
+            // directory can succeed on a mount whose contents are still gated.
+            std::fs::read_dir(p).map(|d| d.count()).is_ok()
+        });
+        Ok(AccessRequest {
+            granted,
+            bundled,
+            volume: volume.map(|p| p.to_string_lossy().into_owned()),
+        })
+    })
+    .await
+}
+
 /// The app-icon trio skips the `blocking()` pool: a base64 encode of four
 /// small PNGs, a sub-kilobyte file write and a hop to the main thread are all
 /// bounded work that never touches libgpod or the library mutex.

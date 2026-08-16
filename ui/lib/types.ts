@@ -100,6 +100,18 @@ export interface VolumeScan {
   cueTracks: number;
 }
 
+/** Outcome of asking macOS for removable-volume access through its own
+ * consent modal. */
+export interface AccessRequest {
+  /** True when a removable volume reads back after the user answered. */
+  granted: boolean;
+  /** False for a dev build launched from a terminal: the TCC decision belongs
+   * to that terminal, so no modal for Platter can appear at all. */
+  bundled: boolean;
+  /** The volume that was probed; null when none was mounted. */
+  volume: string | null;
+}
+
 export interface PendingImport {
   filePath: string;
   title: string;

@@ -403,6 +403,23 @@ export default function App() {
     [run, applySnapshot],
   );
 
+  /** After the system prompt has been approved, the volume that was blocked a
+   * second ago is readable — including its iPod_Control, which is what makes
+   * `isIpod` true — so the connect that failed can simply be retried instead
+   * of asking the user to relaunch. */
+  const reconnectAfterGrant = useCallback(
+    async (volume: string | null) => {
+      setLastError(null);
+      setShowPermBanner(false);
+      if (isOpenRef.current) return;
+      const volumes = await api.listVolumes().catch(() => []);
+      const ipods = volumes.filter((v) => v.isIpod);
+      const target = ipods.find((v) => v.path === volume) ?? ipods[0];
+      if (target) void connect(target.path);
+    },
+    [connect],
+  );
+
   const eject = useCallback(async () => {
     const result = await run(api.ejectIpod());
     // Even when diskutil refuses, the backend has closed the library.
@@ -842,7 +859,11 @@ export default function App() {
         }}
       />
 
-      <ErrorDialog error={lastError} onDismiss={() => setLastError(null)} />
+      <ErrorDialog
+        error={lastError}
+        onDismiss={() => setLastError(null)}
+        onGranted={(volume) => void reconnectAfterGrant(volume)}
+      />
       {showPermPrimer && <PermissionPrimer onDecision={decidePermPrimer} />}
       <Toaster />
     </div>
@@ -879,11 +900,52 @@ function errorIsVolumeAccess(error: string): boolean {
 function ErrorDialog({
   error,
   onDismiss,
+  onGranted,
 }: {
   error: string | null;
   onDismiss: () => void;
+  /** Access was just granted through the system prompt; the volume that
+   * answered is the one worth reconnecting to. */
+  onGranted: (volume: string | null) => void;
 }) {
   const volumeAccess = error !== null && errorIsVolumeAccess(error);
+  // The native modal is raised by a blocking read on the backend thread, so
+  // this call is outstanding for exactly as long as the user stares at it.
+  const [requesting, setRequesting] = useState(false);
+
+  const requestAccess = useCallback(async () => {
+    setRequesting(true);
+    try {
+      const result = await api.requestVolumeAccess();
+      if (result.granted) {
+        toast("success", "Access granted", {
+          detail: "macOS is letting Platter read the iPod now.",
+        });
+        onGranted(result.volume);
+        return;
+      }
+      toastError(
+        result.bundled ? "macOS didn't grant access" : "A dev build can't ask for this",
+        result.bundled
+          ? "The prompt was declined, or no removable volume was mounted to ask about. Open System Settings to grant it by hand."
+          : "The permission belongs to the terminal that launched this build, not to Platter. Grant it there, or run the bundled app.",
+      );
+    } catch (e) {
+      toastError("Couldn't ask macOS for access", String(e));
+    } finally {
+      setRequesting(false);
+    }
+  }, [onGranted]);
+
+  const openSettings = useCallback(() => {
+    void api.openPrivacySettings().catch(() =>
+      toastError(
+        "Couldn't open System Settings",
+        "Open it from the Apple menu, then Privacy & Security → Files & Folders.",
+      ),
+    );
+  }, []);
+
   return (
     <AlertDialog open={error !== null}>
       <AlertDialogContent>
@@ -893,27 +955,26 @@ function ErrorDialog({
           </AlertDialogTitle>
           <AlertDialogDescription className="max-h-72 overflow-y-auto whitespace-pre-wrap">
             {volumeAccess
-              ? `${error}\n\nmacOS requires explicit permission to read removable drives. Open System Settings and enable Platter under Privacy & Security → Files & Folders → Removable Volumes (or grant Full Disk Access), then quit, relaunch and reconnect.\n\nRunning a dev build from a terminal? Grant that terminal the same access instead.`
+              ? `${error}\n\nmacOS asks for removable-drive access once and then remembers the answer, which is why nothing is asking now. “Allow Access” forgets that answer and puts the system's own prompt back up — approve it there and the iPod reconnects, with no relaunch.\n\nIf no prompt appears, enable Platter in System Settings under Privacy & Security → Files & Folders → Removable Volumes (or grant Full Disk Access), then quit, relaunch and reconnect.\n\nRunning a dev build from a terminal? Grant that terminal the same access instead.`
               : error}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          {volumeAccess && (
-            <Button
-              variant="outline"
-              onClick={() =>
-                void api.openPrivacySettings().catch(() =>
-                  toastError(
-                    "Couldn't open System Settings",
-                    "Open it from the Apple menu, then Privacy & Security → Files & Folders.",
-                  ),
-                )
-              }
-            >
-              Open System Settings
-            </Button>
+          {volumeAccess ? (
+            <>
+              <Button variant="ghost" onClick={onDismiss} disabled={requesting}>
+                Close
+              </Button>
+              <Button variant="outline" onClick={openSettings} disabled={requesting}>
+                Open System Settings
+              </Button>
+              <Button onClick={() => void requestAccess()} disabled={requesting}>
+                {requesting ? "Waiting for macOS…" : "Allow Access"}
+              </Button>
+            </>
+          ) : (
+            <AlertDialogAction onClick={onDismiss}>OK</AlertDialogAction>
           )}
-          <AlertDialogAction onClick={onDismiss}>OK</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
