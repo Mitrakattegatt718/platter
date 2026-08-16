@@ -25,6 +25,16 @@ a hand-written C bridge. macOS only.
 - A bare `tauri build` after a bundle leaves a stale `_CodeSignature`, and the
   `.app` then fails to launch from Finder with LaunchServices error `-600`.
   Running `npm run bundle` fixes it, because bundling re-signs last.
+- **The release build has no web inspector, and that is enforced.** Tauri links
+  devtools into a release only when the `devtools` Cargo feature is on (debug
+  gets it by default), so it is off here purely because `tauri` is declared with
+  `features = []`. Adding the feature for one debugging session would otherwise
+  ship a build whose UI opens with Cmd-Alt-I, so `bundle-dylibs.sh` greps the
+  binary for wry's `-setInspectable:` and fails the release if it is there —
+  the absence of the selector is the evidence, not the config. The capability
+  also carries `core:webview:deny-internal-toggle-devtools`, which blocks the
+  JS `toggleDevtools()` IPC path independently; it does not affect the native
+  inspector in `npm run tauri dev`.
 - Every shell script lives in `scripts/` and derives the repo root from its own
   location, so all of them run from anywhere.
 - `tauri-src/binaries/` is gitignored. A fresh clone must run

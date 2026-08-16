@@ -127,6 +127,24 @@ done < <(find "$APP/Contents/MacOS" "$FRAMEWORKS" -type f)
 
 [ "$fail" -eq 0 ] || exit 1
 
+echo "==> Checking the web inspector is off"
+# Tauri compiles devtools into a release build only when the `devtools` Cargo
+# feature is on; in debug it is on by default. That makes "the shipped app has
+# no inspector" a property of the feature list rather than of anything written
+# down, and adding `features = ["devtools"]` for one debugging session would
+# ship a build whose UI can be opened with Cmd-Alt-I and read.
+#
+# wry marks the WKWebView inspectable with -setInspectable:, and that selector
+# is only linked when the feature is on — so its absence from the binary is the
+# evidence, not the config. Checked here because `npm run bundle` is the only
+# supported way to cut a release.
+if strings -a "$BIN" | grep -q "setInspectable"; then
+  echo "error: $(basename "$BIN") links -setInspectable:, so the release ships a" >&2
+  echo "       usable web inspector. Drop the \`devtools\` feature from tauri in" >&2
+  echo "       tauri-src/Cargo.toml and rebuild." >&2
+  exit 1
+fi
+
 echo "==> Checking deployment targets"
 # Every bundled Mach-O must run on the OS tauri.conf.json promises. Homebrew
 # bottles and a libgpod built without MACOSX_DEPLOYMENT_TARGET pin their minos
