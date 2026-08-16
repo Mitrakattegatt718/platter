@@ -646,7 +646,15 @@ function SourcesVirtualized({
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (index) => (rows[index].blocked ? 47 : 32),
+    // Exact, not estimated. A row is py-1.5 (12) + one 16px line + the 1px
+    // border-b; a blocked row carries a second pinned 16px line. These used to
+    // say 32 and 47 against real heights of 29 and 42, and `measureElement`
+    // corrected each rendered row on the way past: the content shrank under a
+    // scrollTop the browser had already clamped, the offsets stopped agreeing
+    // with the scroll position, and the list drew a band of nothing where its
+    // first rows belonged. Sizes the virtualizer never has to revise cannot do
+    // that. Change the padding or the type here and these two numbers move.
+    estimateSize: (index) => (rows[index].blocked ? BLOCKED_ROW_H : ROW_H),
     getItemKey: (index) => rows[index].id,
     overscan: 10,
   });
@@ -654,10 +662,12 @@ function SourcesVirtualized({
     <div ref={scrollRef} className="flex-1 overflow-y-auto">
       <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
         {virtualizer.getVirtualItems().map((item) => (
+          // Deliberately no `ref={virtualizer.measureElement}` — the sizes
+          // above are already exact, and measuring only re-learns them while
+          // installing a ResizeObserver per visible row.
           <div
             key={item.key}
             data-index={item.index}
-            ref={virtualizer.measureElement}
             className="absolute top-0 left-0 w-full"
             style={{ transform: `translateY(${item.start}px)` }}
           >
